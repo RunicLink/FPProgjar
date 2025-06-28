@@ -4,6 +4,7 @@ import json
 import uuid
 import time
 import logging
+import sys
 from battleship.game_logic import BattleshipGame
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -636,12 +637,18 @@ class Server(threading.Thread):
             except Exception as e:
                 logging.error(f"Error accepting connections: {e}")
 
-
 def main():
+    port = 8889  
+    if len(sys.argv) >= 2:
+        try:
+            port = int(sys.argv[1])
+        except ValueError:
+            logging.error("Invalid port number. Using default port 8889.")
+
     housekeeping_thread = threading.Thread(target=game_housekeeping, daemon=True)
     housekeeping_thread.start()
 
-    svr = Server()
+    svr = Server(port)
     svr.start()
 
 if __name__ == "__main__":

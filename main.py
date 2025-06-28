@@ -540,7 +540,7 @@ class BattleshipGUI:
         self.timer_font = pygame.font.Font(None, 48)
         self.scoreboard_font = pygame.font.Font(None, 22)
 
-        self.client = BattleshipHttpClient()
+        self.client = BattleshipHttpClient(host="localhost", port=8888)
         self.client.add_message_callback(self.handle_server_message)
         
         self.POLL_GAME_STATE_EVENT = pygame.USEREVENT + 1
