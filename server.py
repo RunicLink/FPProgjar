@@ -1,4 +1,3 @@
-# battleship_server_http.py
 import socket
 import threading
 import json
@@ -12,13 +11,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 GAMES = {}
 GAME_LOGIC = BattleshipGame()
 TURN_TIMEOUT = 60 
-CLIENT_INACTIVITY_TIMEOUT = 5  # 10 seconds of inactivity before marking as disconnected
-RECONNECT_WINDOW_SECONDS = 60  # NEW: Duration of the pause for reconnection
+CLIENT_INACTIVITY_TIMEOUT = 5  
+RECONNECT_WINDOW_SECONDS = 60  
 
-# Quick Match Queue - stores players waiting for quick match
 QUICK_MATCH_QUEUE = []
-QUICK_MATCH_TIMEOUT = 120  # 2 minutes timeout for quick match queue
-QUICK_MATCH_LOCK = threading.Lock()  # Thread lock for queue operations
+QUICK_MATCH_TIMEOUT = 120  
+QUICK_MATCH_LOCK = threading.Lock()  
 
 class BattleshipHttpServer:
     """
@@ -109,51 +107,77 @@ class BattleshipHttpServer:
 
             game_id = params.get('game_id')
             player_number_str = params.get('player_number')
-            if not player_number_str:
-                return self.response(400, 'Bad Request', {'error': 'Player number is required'})
-
-            player_number = int(player_number_str)
+            is_spectator = params.get('is_spectator') == 'true' 
 
             if not game_id or game_id not in GAMES:
                 return self.response(404, 'Not Found', {'error': 'Game not found'})
             
             game = GAMES[game_id]
 
-            if player_number in game['players']:
-                game['players'][player_number]['last_activity'] = time.time()
-            
-            current_status_message = game['status_message'] # Start with the default message.
+            if not is_spectator and player_number_str:
+                player_number = int(player_number_str)
+                if player_number in game['players']:
+                    game['players'][player_number]['last_activity'] = time.time()
+            elif is_spectator: 
+                pass 
+
+            current_status_message = game['status_message'] 
 
             if game['phase'] == 'paused':
                 pause_start = game.get('pause_start_time', 0)
                 elapsed = time.time() - pause_start
                 time_remaining = max(0, RECONNECT_WINDOW_SECONDS - elapsed)
 
-                # Overwrite the status message with our dynamic countdown.
                 current_status_message = f"Game Paused. Waiting {int(time_remaining)} seconds for the other player to reconnect. Room code: {game['game_id']}"
 
-            opponent_number = 2 if player_number == 1 else 1
+            if is_spectator:
+                state_for_spectator = {
+                    'type': 'game_state',
+                    'game_phase': game['phase'],
+                    'player1_name': game['players'].get(1, {}).get('name'),
+                    'player2_name': game['players'].get(2, {}).get('name'),
+                    'player1_board': game['player_boards'][1],
+                    'player2_board': game['player_boards'][2],
+                    'current_turn_player_name': game['players'].get(game['turn'], {}).get('name'),
+                    'status_message': current_status_message,
+                    'game_over': game['phase'] == 'game_over',
+                    'winner': game.get('winner_name'),
+                    'turn_time_remaining': max(0, TURN_TIMEOUT - (time.time() - game.get('turn_start_time', 0))) if game['phase'] == 'playing' else None,
+                    'player1_connected': game['players'].get(1, {}).get('connected', False),
+                    'player2_connected': game['players'].get(2, {}).get('connected', False),
+                    'player1_sunk_ships': game['sunk_ships'][1],
+                    'player2_sunk_ships': game['sunk_ships'][2]
+                }
+                return self.response(200, 'OK', state_for_spectator)
+            else:
+                if not player_number_str:
+                    return self.response(400, 'Bad Request', {'error': 'Player number is required'})
+                player_number = int(player_number_str)
+                opponent_number = 2 if player_number == 1 else 1
 
-            state_for_player = {
-                'type': 'game_state',
-                'game_phase': game['phase'],
-                'your_turn': game['turn'] == player_number and game['phase'] == 'playing',
-                'own_board': game['player_boards'][player_number],
-                'opponent_board': self.get_opponent_view(game['player_boards'][opponent_number]),
-                'player_name': game['players'].get(player_number, {}).get('name'),
-                'opponent_name': game['players'].get(opponent_number, {}).get('name'),
-                'current_turn_player_name': game['players'].get(game['turn'], {}).get('name'),
-                'status_message': current_status_message,
-                'game_over': game['phase'] == 'game_over',
-                'winner': game.get('winner_name'),
-                'turn_time_remaining': max(0, TURN_TIMEOUT - (time.time() - game.get('turn_start_time', 0))) if game['phase'] == 'playing' else None,
-                'opponent_connected': game['players'].get(opponent_number, {}).get('connected', False),
-                'own_sunk_ships': game['sunk_ships'][player_number],
-                'opponent_sunk_ships': game['sunk_ships'][opponent_number],
-                'placed_ships': game['players'].get(player_number, {}).get('placed_ships_data', [])
-            }
-            return self.response(200, 'OK', state_for_player)
+                state_for_player = {
+                    'type': 'game_state',
+                    'game_phase': game['phase'],
+                    'your_turn': game['turn'] == player_number and game['phase'] == 'playing',
+                    'own_board': game['player_boards'][player_number],
+                    'opponent_board': self.get_opponent_view(game['player_boards'][opponent_number]),
+                    'player_name': game['players'].get(player_number, {}).get('name'),
+                    'opponent_name': game['players'].get(opponent_number, {}).get('name'),
+                    'current_turn_player_name': game['players'].get(game['turn'], {}).get('name'),
+                    'status_message': current_status_message,
+                    'game_over': game['phase'] == 'game_over',
+                    'winner': game.get('winner_name'),
+                    'turn_time_remaining': max(0, TURN_TIMEOUT - (time.time() - game.get('turn_start_time', 0))) if game['phase'] == 'playing' else None,
+                    'opponent_connected': game['players'].get(opponent_number, {}).get('connected', False),
+                    'own_sunk_ships': game['sunk_ships'][player_number],
+                    'opponent_sunk_ships': game['sunk_ships'][opponent_number],
+                    'placed_ships': game['players'].get(player_number, {}).get('placed_ships_data', [])
+                }
+                return self.response(200, 'OK', state_for_player)
         
+        if path == '/api/quick_matches':
+            return self.handle_get_quick_matches()
+
         return self.response(404, 'Not Found', {'error': 'Endpoint not found'})
     
     def get_opponent_view(self, real_board):
@@ -175,7 +199,6 @@ class BattleshipHttpServer:
         if path == '/api/host':
             return self.handle_host(payload)
 
-        # Quick Match endpoints
         if path == '/api/quick_match':
             return self.handle_quick_match(payload)
             
@@ -185,9 +208,11 @@ class BattleshipHttpServer:
         if path == '/api/check_quick_match':
             return self.handle_check_quick_match(payload)
 
-        # *** FIX: Consolidate join and reconnect logic ***
         if path == '/api/reconnect' or path == '/api/join':
             return self.handle_join_or_reconnect(payload)
+
+        if path == '/api/spectate':
+            return self.handle_spectate_game(payload)
             
         game_id = payload.get('game_id')
         if not game_id or game_id not in GAMES:
@@ -214,6 +239,7 @@ class BattleshipHttpServer:
             'phase': 'waiting_room',
             'status_message': 'Waiting for opponent to join...',
             'turn_start_time': 0,
+            'is_quick_match': False 
         }
         logging.info(f"Game {game_id} hosted by {player_name}")
         return self.response(200, 'OK', {'game_id': game_id, 'player_number': 1})
@@ -236,35 +262,29 @@ class BattleshipHttpServer:
                 break
 
         if reconnecting_player_number:
-            # --- NEW LOGIC FOR RESUMING A PAUSED GAME ---
             if game['phase'] == 'paused' and game.get('disconnected_player_num') == reconnecting_player_number:
                 logging.info(f"Player {player_name} reconnected to game {game_id}. Resuming.")
                 game['players'][reconnecting_player_number]['connected'] = True
                 game['players'][reconnecting_player_number]['last_activity'] = time.time()
                 
-                # Un-pause the game
                 game['phase'] = 'playing'
-                # Reset the turn timer to give the current player a full turn
                 game['turn_start_time'] = time.time()
                 game['status_message'] = f"{player_name} has reconnected. Resuming game."
                 
-                # Clean up pause-related fields
                 if 'pause_start_time' in game: del game['pause_start_time']
                 if 'disconnected_player_num' in game: del game['disconnected_player_num']
                 
                 return self.response(200, 'OK', {'game_id': game_id, 'player_number': reconnecting_player_number, 'reconnected': True})
             
-            # Original reconnect logic for a player that may have been marked disconnected but game not paused
             elif not game['players'][reconnecting_player_number]['connected']:
                 game['players'][reconnecting_player_number]['connected'] = True
                 game['players'][reconnecting_player_number]['last_activity'] = time.time()
                 logging.info(f"Player {player_name} reconnected to game {game_id} as player {reconnecting_player_number}")
                 return self.response(200, 'OK', {'game_id': game_id, 'player_number': reconnecting_player_number, 'reconnected': True})
             
-            else: # Player is already connected and game is not paused
+            else: 
                  return self.response(403, 'Forbidden', {'error': 'Player is already connected to this game.'})
         else:
-            # This is a new player joining
             if len(game['players']) >= 2:
                 return self.response(403, 'Forbidden', {'error': 'Game is full'})
             
@@ -338,7 +358,6 @@ class BattleshipHttpServer:
             return self.response(400, 'Bad Request', {'error': 'Player name is required'})
         
         with QUICK_MATCH_LOCK:
-            # Remove player from any finished games to avoid conflicts
             games_to_clean = []
             for game_id, game in GAMES.items():
                 if game['phase'] == 'game_over':
@@ -352,18 +371,14 @@ class BattleshipHttpServer:
                     del GAMES[game_id]
                     logging.info(f"Cleaned up finished game {game_id} for player {player_name}")
             
-            # Check if player is already in queue
             for queued_player in QUICK_MATCH_QUEUE:
                 if queued_player['name'] == player_name:
                     return self.response(400, 'Bad Request', {'error': 'Already in quick match queue'})
             
-            # Try to match with another player first
             if len(QUICK_MATCH_QUEUE) >= 1:
-                # Get the first player from queue
                 player1 = QUICK_MATCH_QUEUE.pop(0)
                 player2 = {'name': player_name, 'timestamp': time.time()}
                 
-                # Create game
                 game_id = str(uuid.uuid4())[:8]
                 GAMES[game_id] = {
                     'game_id': game_id,
@@ -383,7 +398,6 @@ class BattleshipHttpServer:
                 
                 logging.info(f"Quick match created: {game_id} with {player1['name']} vs {player2['name']}")
                 
-                # Return game info for the requesting player (player2 in this case)
                 return self.response(200, 'OK', {
                     'game_id': game_id, 
                     'player_number': 2,
@@ -391,7 +405,6 @@ class BattleshipHttpServer:
                     'opponent_name': player1['name']
                 })
             else:
-                # Add player to queue
                 queue_entry = {
                     'name': player_name,
                     'timestamp': time.time()
@@ -399,7 +412,6 @@ class BattleshipHttpServer:
                 QUICK_MATCH_QUEUE.append(queue_entry)
                 logging.info(f"Player {player_name} joined quick match queue")
                 
-                # Still waiting for opponent
                 return self.response(200, 'OK', {'matched': False, 'waiting': True})
 
     def handle_cancel_quick_match(self, payload):
@@ -409,7 +421,6 @@ class BattleshipHttpServer:
             return self.response(400, 'Bad Request', {'error': 'Player name is required'})
         
         with QUICK_MATCH_LOCK:
-            # Remove player from queue
             for i, queued_player in enumerate(QUICK_MATCH_QUEUE):
                 if queued_player['name'] == player_name:
                     QUICK_MATCH_QUEUE.pop(i)
@@ -425,12 +436,10 @@ class BattleshipHttpServer:
             return self.response(400, 'Bad Request', {'error': 'Player name is required'})
         
         with QUICK_MATCH_LOCK:
-            # Check if player is still in queue
             for queued_player in QUICK_MATCH_QUEUE:
                 if queued_player['name'] == player_name:
                     return self.response(200, 'OK', {'matched': False, 'waiting': True})
         
-        # Check if player is in a quick match game (but only active games)
         for game_id, game in GAMES.items():
             if game.get('is_quick_match', False) and game['phase'] != 'game_over':
                 for player_num, player_data in game['players'].items():
@@ -445,6 +454,33 @@ class BattleshipHttpServer:
         
         return self.response(404, 'Not Found', {'error': 'Not in quick match queue or game'})
 
+    def handle_get_quick_matches(self):
+        ongoing_matches = []
+        for game_id, game in GAMES.items():
+            if game.get('is_quick_match', False) and game['phase'] != 'game_over':
+                p1_name = game['players'].get(1, {}).get('name')
+                p2_name = game['players'].get(2, {}).get('name')
+                if p1_name and p2_name:
+                    ongoing_matches.append({
+                        'game_id': game_id,
+                        'player1_name': p1_name,
+                        'player2_name': p2_name,
+                        'status': game['phase']
+                    })
+        return self.response(200, 'OK', {'matches': ongoing_matches})
+
+    def handle_spectate_game(self, payload):
+        game_id = payload.get('game_id')
+        if not game_id or game_id not in GAMES:
+            return self.response(404, 'Not Found', {'error': 'Game not found'})
+        
+        game = GAMES[game_id]
+        if not game.get('is_quick_match'):
+            return self.response(403, 'Forbidden', {'error': 'Only quick matches can be spectated.'})
+
+        logging.info(f"Client attempting to spectate game {game_id}")
+        return self.response(200, 'OK', {'success': True, 'game_id': game_id, 'message': 'Joined as spectator'})
+
 
 def game_housekeeping():
     """
@@ -454,10 +490,8 @@ def game_housekeeping():
         games_to_remove = []
         for game_id, game in list(GAMES.items()):
             if game['phase'] == 'playing':
-                # (This part of the function is unchanged)
                 time_since_turn_start = time.time() - game.get('turn_start_time', 0)
                 if time_since_turn_start > TURN_TIMEOUT:
-                    # ... turn timeout logic ...
                     current_player_num = game['turn']
                     current_player_name = game['players'][current_player_num]['name']
                     logging.info(f"Game {game_id}: {current_player_name}'s turn timed out.")
@@ -479,7 +513,6 @@ def game_housekeeping():
                         break
             
             elif game['phase'] == 'paused':
-                # CHANGED: The check now uses the dynamic constant.
                 if time.time() - game.get('pause_start_time', 0) > RECONNECT_WINDOW_SECONDS:
                     logging.info(f"Game {game_id}: Reconnect window closed.")
                     game['phase'] = 'game_over'
@@ -495,14 +528,11 @@ def game_housekeeping():
                         game['status_message'] = "Game Over! Player disconnected."
 
 
-            # --- EXISTING LOGIC FOR GAME CLEANUP ---
             if game['phase'] == 'game_over':
-                # Give a small grace period before removing the game so clients can get the final state
-                # The 'turn_start_time' can be repurposed as 'game_end_time' here.
                 if 'game_end_time' not in game:
                     game['game_end_time'] = time.time()
                 
-                if time.time() - game.get('game_end_time', 0) > 10: # 10 seconds grace period
+                if time.time() - game.get('game_end_time', 0) > 10: 
                     games_to_remove.append(game_id)
                     continue
 
@@ -511,7 +541,6 @@ def game_housekeeping():
                 del GAMES[game_id]
                 logging.info(f"Removed inactive/finished game {game_id}")
 
-        # Clean up quick match queue - remove players who have been waiting too long
         with QUICK_MATCH_LOCK:
             current_time = time.time()
             players_to_remove = []
@@ -519,14 +548,13 @@ def game_housekeeping():
                 if current_time - queued_player['timestamp'] > QUICK_MATCH_TIMEOUT:
                     players_to_remove.append(i)
             
-            for i in reversed(players_to_remove):  # Remove from end to avoid index shifting
+            for i in reversed(players_to_remove):  
                 removed_player = QUICK_MATCH_QUEUE.pop(i)
                 logging.info(f"Removed {removed_player['name']} from quick match queue (timeout)")
 
         time.sleep(1)
 
 
-# --- Threading and Socket Server ---
 httpserver = BattleshipHttpServer()
 
 class ProcessTheClient(threading.Thread):
@@ -536,23 +564,20 @@ class ProcessTheClient(threading.Thread):
         threading.Thread.__init__(self)
 
     def run(self):
-        self.connection.settimeout(10.0)  # 10-second timeout for idle connections
+        self.connection.settimeout(10.0)  
         
         while True:
             try:
-                # Read the request headers
                 request_data = b''
                 while b'\r\n\r\n' not in request_data:
                     chunk = self.connection.recv(4096)
                     if not chunk:
-                        # Client closed connection
                         break
                     request_data += chunk
                 
                 if not request_data:
-                    break # Break loop if client disconnected
+                    break 
 
-                # Extract headers and body
                 header_part, body_part = request_data.split(b'\r\n\r\n', 1)
                 headers = {}
                 header_lines = header_part.split(b'\r\n')
@@ -561,7 +586,6 @@ class ProcessTheClient(threading.Thread):
                         key, value = line.split(b': ', 1)
                         headers[key.lower().decode('utf-8')] = value.decode('utf-8')
 
-                # Read the body based on Content-Length
                 content_length = int(headers.get('content-length', 0))
                 
                 while len(body_part) < content_length:
@@ -570,11 +594,9 @@ class ProcessTheClient(threading.Thread):
                 request_str = request_data.decode('utf-8', errors='ignore')
                 logging.info(f"Request from {self.address}:\n--- START ---\n{request_str[:500]}\n--- END ---")
 
-                # Process the request
                 response_bytes = httpserver.process(request_str)
                 self.connection.sendall(response_bytes)
 
-                # Check if the client requested to close the connection
                 if headers.get('connection', 'keep-alive').lower() == 'close':
                     break
 
