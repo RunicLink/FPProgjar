@@ -11,6 +11,7 @@ class BattleshipGame:
             "Submarine": 3,
             "PatrolBoat": 2
         }
+        # These are now templates, not used directly for game instances in the server
         self.player1_board = [['.' for _ in range(self.board_size)] for _ in range(self.board_size)]
         self.player2_board = [['.' for _ in range(self.board_size)] for _ in range(self.board_size)]
         self.player1_ships = {}
@@ -25,7 +26,7 @@ class BattleshipGame:
                     return False
             for col in range(start_col, start_col + ship_length):
                 player_board[start_row][col] = ship_name[0] 
-            player_ships[ship_name] = [(start_row, c) for c in range(start_col, start_col + ship_length)]
+            player_ships[ship_name] = {'positions': [(start_row, c) for c in range(start_col, start_col + ship_length)], 'hits': []}
         elif orientation == 'V':
             if start_row + ship_length > self.board_size:
                 return False
@@ -34,7 +35,7 @@ class BattleshipGame:
                     return False
             for row in range(start_row, start_row + ship_length):
                 player_board[row][start_col] = ship_name[0]
-            player_ships[ship_name] = [(r, start_col) for r in range(start_row, start_row + ship_length)]
+            player_ships[ship_name] = {'positions': [(r, start_col) for r in range(start_row, start_row + ship_length)], 'hits': []}
         else:
             return False
         return True
@@ -47,103 +48,90 @@ class BattleshipGame:
                 if orientation == 'H':
                     start_row = random.randint(0, self.board_size - 1)
                     start_col = random.randint(0, self.board_size - ship_length)
-                else:
+                else: # 'V'
                     start_row = random.randint(0, self.board_size - ship_length)
                     start_col = random.randint(0, self.board_size - 1)
-                placed = self.place_ship(player_board, player_ships, ship_name, ship_length, start_row, start_col, orientation)
+                
+                # Create a temporary copy to test placement
+                temp_board = [row[:] for row in player_board]
+                temp_ships = {} # We don't need to deep copy ships for this check
+
+                if self.place_ship(temp_board, temp_ships, ship_name, ship_length, start_row, start_col, orientation):
+                     # If successful, apply to the real board
+                    self.place_ship(player_board, player_ships, ship_name, ship_length, start_row, start_col, orientation)
+                    placed = True
+
 
     def attack(self, opponent_board, opponent_ships, row, col):
         if not (0 <= row < self.board_size and 0 <= col < self.board_size):
             return "Invalid coordinates"
-        if opponent_board[row][col] == 'X' or opponent_board[row][col] == 'O':
+        if opponent_board[row][col] in ['X', 'O']:
             return "Already attacked"
 
-        if opponent_board[row][col] != '.':
-            ship_hit_char = opponent_board[row][col]
+        hit_char = opponent_board[row][col]
+        if hit_char != '.':
             ship_name_hit = None
-            for name, positions in opponent_ships.items():
-                if ship_hit_char == name[0]:
-                    ship_name_hit = name
-                    break
-
+            for name, data in opponent_ships.items():
+                if hit_char == name[0]:
+                    if (row, col) in data['positions']:
+                        ship_name_hit = name
+                        data['hits'].append((row, col))
+                        break
+            
             opponent_board[row][col] = 'X' 
             
-            sunk = True
-            for r, c in opponent_ships[ship_name_hit]:
-                if opponent_board[r][c] != 'X':
-                    sunk = False
-                    break
-            if sunk:
-                return f"Hit and sunk {ship_name_hit}!"
+            if ship_name_hit:
+                if len(opponent_ships[ship_name_hit]['hits']) == len(opponent_ships[ship_name_hit]['positions']):
+                    return f"Hit and sunk {ship_name_hit}!"
+                else:
+                    return "Hit"
             else:
-                return "Hit"
+                 # This case should ideally not be reached if boards are set up correctly
+                return "Hit" 
         else:
             opponent_board[row][col] = 'O'
             return "Miss"
 
-    def check_game_over(self, board, ships):
+    def check_game_over(self, opponent_ships):
         """
-        Memeriksa apakah semua kapal di papan yang diberikan sudah tenggelam.
-        Mengembalikan True jika game berakhir, False jika tidak.
+        Checks if all ships for a given player have been sunk.
+        Returns True if the game is over, False otherwise.
         """
-        if not ships:
-            return False
+        if not opponent_ships:
+            return False # No ships to sink
             
-        for ship_name, positions in ships.items():
-            for r, c in positions:
-                if board[r][c] != 'X':
-                    return False
+        for ship_name, data in opponent_ships.items():
+            if len(data['hits']) < len(data['positions']):
+                return False # At least one ship is not fully sunk
         return True
 
     def print_board(self, board):
         for row in board:
-            print(" ".join(row))
+            print(" ".join(str(cell) for cell in row))
 
 
 if __name__ == '__main__':
     game = BattleshipGame()
-    game.auto_place_ships(game.player1_board, game.player1_ships)
-    game.auto_place_ships(game.player2_board, game.player2_ships)
+    
+    # Create fresh boards and ship dictionaries for a test game
+    p1_board = [['.' for _ in range(game.board_size)] for _ in range(game.board_size)]
+    p1_ships = {}
+    p2_board = [['.' for _ in range(game.board_size)] for _ in range(game.board_size)]
+    p2_ships = {}
+
+    game.auto_place_ships(p1_board, p1_ships)
+    game.auto_place_ships(p2_board, p2_ships)
 
     print("Player 1 Board:")
-    game.print_board(game.player1_board)
+    game.print_board(p1_board)
     print("\nPlayer 2 Board:")
-    game.print_board(game.player2_board)
+    game.print_board(p2_board)
 
-    print("\nAttacking Player 1's board:")
-    print(game.attack(game.player1_board, game.player1_ships, 0, 0))
-    print(game.attack(game.player1_board, game.player1_ships, 0, 1))
-    print(game.attack(game.player1_board, game.player1_ships, 0, 2))
-    print(game.attack(game.player1_board, game.player1_ships, 0, 3))
-    print(game.attack(game.player1_board, game.player1_ships, 0, 4))
-    game.print_board(game.player1_board)
+    print("\nAttacking Player 1's board at (0,0):")
+    print(game.attack(p1_board, p1_ships, 0, 0))
+    game.print_board(p1_board)
 
-    print("\nAttacking Player 2's board:")
-    print(game.attack(game.player2_board, game.player2_ships, 5, 5))
-    game.print_board(game.player2_board)
-
-    all_sunk_player1 = True
-    for ship_name, positions in game.player1_ships.items():
-        for r, c in positions:
-            if game.player1_board[r][c] != 'X':
-                all_sunk_player1 = False
-                break
-        if not all_sunk_player1:
-            break
-    if all_sunk_player1:
+    if game.check_game_over(p1_ships):
         print("Player 1's ships are all sunk! Game Over.")
     else:
         print("Player 1's ships are not all sunk.")
-
-    all_sunk_player2 = True
-    for ship_name, positions in game.player2_ships.items():
-        for r, c in positions:
-            if game.player2_board[r][c] != 'X':
-                all_sunk_player2 = False
-                break
-        if not all_sunk_player2:
-            break
-    if all_sunk_player2:
-        print("Player 2's ships are all sunk! Game Over.")
-    else:
-        print("Player 2's ships are not all sunk.")

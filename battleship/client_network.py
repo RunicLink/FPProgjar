@@ -2,12 +2,13 @@
 import socket
 import json
 import threading
+import time
 
 class BattleshipClient:
     def __init__(self, host='localhost', port=8888):
         self.host = host
         self.port = port
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket = None
         self.connected = False
         self.game_state = {
             'own_board': None,
@@ -21,12 +22,18 @@ class BattleshipClient:
             'is_spectator': False,
             'spectate_board_p1': None,
             'spectate_board_p2': None,
-            'current_turn_player_name': None
+            'current_turn_player_name': None,
+            'turn_time_remaining': None,
+            'opponent_connected': True,
         }
         self.message_callbacks = []
+        self.is_reconnecting = False
 
     def connect(self):
+        if self.connected:
+            return True
         try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.connect((self.host, self.port))
             self.connected = True
             
@@ -37,101 +44,68 @@ class BattleshipClient:
             return True
         except Exception as e:
             print(f"Failed to connect: {e}")
+            self.connected = False
             return False
 
     def listen_for_messages(self):
         while self.connected:
             try:
-                data = self.socket.recv(4096).decode('utf-8') 
+                data = self.socket.recv(4096)
                 if not data:
+                    self.handle_disconnect()
                     break
-
-                for message_str in data.split('}{'):
-                    if not message_str.startswith('{'):
-                        message_str = '{' + message_str
-                    if not message_str.endswith('}'):
-                        message_str = message_str + '}'
-                    
-                    try:
-                        message = json.loads(message_str)
-                        self.handle_message(message)
-                    except json.JSONDecodeError:
-                        print(f"Skipping malformed JSON: {message_str}")
                 
+                # Handle multiple JSON objects in one recv
+                buffer = data.decode('utf-8')
+                while buffer:
+                    try:
+                        message, index = json.JSONDecoder().raw_decode(buffer)
+                        self.handle_message(message)
+                        buffer = buffer[index:].lstrip()
+                    except json.JSONDecodeError:
+                        # Incomplete message, try to receive more
+                        break
+
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                print(f"Connection error: {e}")
+                self.handle_disconnect()
+                break
             except Exception as e:
                 print(f"Error receiving message: {e}")
+                self.handle_disconnect()
                 break
-        
-        self.connected = False
-
+    
+    def handle_disconnect(self):
+        if not self.is_reconnecting:
+            self.connected = False
+            print("Disconnected from server.")
+            for callback in self.message_callbacks:
+                callback({'type': 'disconnected'})
+    
     def handle_message(self, message):
         msg_type = message.get('type')
         
-        if msg_type == 'game_found':
-            self.game_state['player_number'] = message['player_number']
-            self.game_state['room_code'] = message.get('room_code')
-            self.game_state['player_name'] = message.get('player_name', '')
-        elif msg_type == 'game_state':
-            if not self.game_state['is_spectator']:
-                self.game_state['own_board'] = message['own_board']
-                self.game_state['opponent_board'] = message['opponent_board']
-                self.game_state['your_turn'] = message['your_turn']
-                self.game_state['game_started'] = message['game_started']
-                self.game_state['player_name'] = message.get('player_name', self.game_state['player_name'])
-                self.game_state['opponent_name'] = message.get('opponent_name', self.game_state['opponent_name'])
-                self.game_state['current_turn_player_name'] = message.get('current_turn_player_name')
-            else:
-                self.game_state['spectate_board_p1'] = message['player1_board']
-                self.game_state['spectate_board_p2'] = message['player2_board']
-                self.game_state['game_started'] = message['game_started']
-                self.game_state['player1_name'] = message.get('player1_name', 'Player 1')
-                self.game_state['player2_name'] = message.get('player2_name', 'Player 2')
-                self.game_state['current_turn_player_name'] = message.get('current_turn_player_name')
-
+        if msg_type == 'game_state':
+            self.game_state.update(message)
         elif msg_type == 'game_start':
-            self.game_state['your_turn'] = message['your_turn']
-            self.game_state['game_started'] = True
-            self.game_state['player_name'] = message.get('player_name', self.game_state['player_name'])
-            self.game_state['opponent_name'] = message.get('opponent_name', '')
-            self.game_state['current_turn_player_name'] = message.get('current_turn_player_name')
-
+            self.game_state.update(message)
         elif msg_type == 'attack_result':
-            if message['success']:
-                self.game_state['your_turn'] = message.get('your_turn', False)
-                self.game_state['current_turn_player_name'] = message.get('current_turn_player_name')
+            self.game_state.update(message)
         elif msg_type == 'opponent_attack':
-            self.game_state['your_turn'] = message.get('your_turn', False)
-            self.game_state['current_turn_player_name'] = message.get('current_turn_player_name')
-
+            self.game_state.update(message)
         elif msg_type == 'room_code':
             self.game_state['room_code'] = message['code']
         elif msg_type == 'room_join_status':
             self.game_state['room_join_success'] = message['success']
             self.game_state['message'] = message['message']
-        elif msg_type == 'game_list':
-            self.game_state['game_list'] = message['games']
-        elif msg_type == 'spectate_start':
-            self.game_state['is_spectator'] = True
-            self.game_state['game_started'] = True
-            self.game_state['player1_name'] = message.get('player1_name', 'Player 1')
-            self.game_state['player2_name'] = message.get('player2_name', 'Player 2')
-            self.game_state['current_turn_player_name'] = message.get('current_turn_player_name')
         elif msg_type == 'reconnect_success':
-            self.game_state['player_number'] = message['player_number']
-            self.game_state['room_code'] = message.get('room_code')
-            self.game_state['player_name'] = message.get('player_name', '')
-            self.game_state['opponent_name'] = message.get('opponent_name', '')
-            phase = message.get('phase')
-            if phase == 'placing_ships':
-                self.game_state['game_started'] = False
-            elif phase == 'waiting_for_opponent':
-                self.game_state['game_started'] = False
-            elif phase == 'playing':
-                self.game_state['game_started'] = True
+            self.is_reconnecting = False
+            self.game_state.update(message)
+            print("Reconnected successfully.")
         elif msg_type == 'opponent_disconnected_temp':
-            pass
+            self.game_state['opponent_connected'] = False
         elif msg_type == 'opponent_reconnected':
-            pass
+            self.game_state['opponent_connected'] = True
 
         for callback in self.message_callbacks:
             callback(message)
@@ -140,30 +114,44 @@ class BattleshipClient:
         self.message_callbacks.append(callback)
 
     def send_message(self, message):
-        if self.connected:
-            try:
-                self.socket.send(json.dumps(message).encode('utf-8'))
-                return True
-            except Exception as e:
-                print(f"Failed to send message: {e}")
-                return False
+        if not self.connected:
+            print("Not connected, cannot send message.")
+            return False
+        try:
+            self.socket.sendall(json.dumps(message).encode('utf-8'))
+            return True
+        except (ConnectionResetError, BrokenPipeError, OSError) as e:
+            print(f"Failed to send message: {e}")
+            self.handle_disconnect()
+            return False
         return False
+    
+    def reconnect(self, player_name, room_code):
+        if self.connected:
+            self.disconnect()
+
+        print("Attempting to reconnect...")
+        self.is_reconnecting = True
+        time.sleep(1) # Give a moment for the old socket to close
+        if self.connect():
+            self.send_message({
+                'type': 'reconnect', 
+                'player_name': player_name, 
+                'room_code': room_code
+            })
+        else:
+            self.is_reconnecting = False
+            print("Reconnect failed: Could not connect to server.")
+
 
     def host_game(self, player_name):
+        self.game_state['player_name'] = player_name
         return self.send_message({'type': 'host_game', 'player_name': player_name})
 
     def join_private_game(self, player_name, room_code):
+        self.game_state['player_name'] = player_name
+        self.game_state['room_code'] = room_code
         return self.send_message({'type': 'join_private_game', 'player_name': player_name, 'room_code': room_code})
-
-    def quick_play(self):
-        return self.send_message({'type': 'quick_play'})
-
-    def get_game_list(self):
-        return self.send_message({'type': 'get_game_list'})
-
-    def spectate_game(self, game_id):
-        self.game_state['is_spectator'] = True
-        return self.send_message({'type': 'spectate_game', 'game_id': game_id})
 
     def place_ships(self, ships_data):
         return self.send_message({
@@ -178,27 +166,36 @@ class BattleshipClient:
             'col': col
         })
 
-    def get_game_state(self):
-        return self.send_message({'type': 'get_game_state'})
-
     def disconnect(self):
         self.connected = False
         if self.socket:
-            self.socket.close()
+            try:
+                self.socket.shutdown(socket.SHUT_RDWR)
+                self.socket.close()
+            except OSError:
+                pass # Socket already closed
+            self.socket = None
 
 if __name__ == '__main__':
     client = BattleshipClient()
     
     def message_handler(message):
         print(f"Received: {message}")
-    
+        if message.get('type') == 'disconnected':
+            print("Attempting to reconnect in 5 seconds...")
+            time.sleep(5)
+            # In a real app, you would get name and room_code from a saved state
+            client.reconnect(client.game_state['player_name'], client.game_state['room_code'])
+
     client.add_message_callback(message_handler)
     
     if client.connect():
         print("Connected to server")
+        # Example of hosting a game
+        client.host_game("Player CLI")
         try:
-            while client.connected:
-                pass
+            while True:
+                time.sleep(1)
         except KeyboardInterrupt:
             print("Disconnecting...")
             client.disconnect()
