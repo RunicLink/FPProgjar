@@ -428,25 +428,6 @@ class EnhancedButton:
         temp_surface.blit(mask_surface, (0,0), None, pygame.BLEND_RGBA_MULT)
         screen.blit(temp_surface, rect.topleft)
 
-def draw_animated_background(screen, time_offset=0):
-    for y in range(WINDOW_HEIGHT):
-        progress = y / WINDOW_HEIGHT
-        color = tuple(
-            int(GRADIENT_START[i] * (1 - progress) + GRADIENT_END[i] * progress)
-            for i in range(3)
-        )
-        pygame.draw.line(screen, color, (0, y), (WINDOW_WIDTH, y))
-    
-    for i in range(5):
-        alpha = 20 + int(10 * math.sin(time_offset * 0.01 + i))
-        radius = 100 + int(20 * math.sin(time_offset * 0.008 + i * 2))
-        x = (WINDOW_WIDTH // 6) * (i + 1)
-        y = WINDOW_HEIGHT // 2 + int(50 * math.sin(time_offset * 0.005 + i))
-        
-        circle_surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
-        pygame.draw.circle(circle_surface, (*LIGHT_BLUE[:3], alpha), (radius, radius), radius)
-        screen.blit(circle_surface, (x - radius, y - radius))
-
 def draw_enhanced_title(screen, title, x_pos, y_pos, size=48):
     font = pygame.font.Font(None, size)
     
@@ -781,7 +762,7 @@ class BattleshipGUI:
                 elif self.game_phase == "spectating":
                     self.main_menu_button.handle_event(event)
 
-            draw_animated_background(self.screen, pygame.time.get_ticks())
+            self.screen.fill(GRADIENT_END)
             self.draw_status()
 
             if self.disconnected:
