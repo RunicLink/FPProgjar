@@ -52,6 +52,8 @@ class GameManager:
                     'current_turn': player1_id,
                     'player1_ready': False,
                     'player2_ready': False,
+                    'player1_ships_placed': [], # To store ship layouts
+                    'player2_ships_placed': [], # To store ship layouts
                     'game_started': False,
                     'game_type': 'private',
                     'spectators': [],
@@ -94,6 +96,8 @@ class GameManager:
                     'current_turn': player1_id,
                     'player1_ready': False,
                     'player2_ready': False,
+                    'player1_ships_placed': [],
+                    'player2_ships_placed': [],
                     'game_started': False,
                     'game_type': 'quick_play',
                     'spectators': []
@@ -358,6 +362,9 @@ class GameManager:
         current_game_info = self.games[game_id]
         opponent_name = current_game_info['player2_name'] if player_number == 1 else current_game_info['player1_name']
         
+        # Get the stored ship layout for the reconnecting player
+        ships_placed = current_game_info.get(f'player{player_number}_ships_placed', [])
+        
         if not current_game_info['game_started']:
             if (player_number == 1 and current_game_info['player1_ready']) or \
                (player_number == 2 and current_game_info['player2_ready']):
@@ -368,7 +375,8 @@ class GameManager:
                     'room_code': room_code,
                     'player_name': player_name,
                     'opponent_name': opponent_name,
-                    'message': 'Reconnected! Waiting for opponent to place ships.'
+                    'message': 'Reconnected! Waiting for opponent to place ships.',
+                    'placed_ships': ships_placed # <-- SEND SHIP DATA
                 })
             else:
                 self.send_message(client_id, {
@@ -379,9 +387,10 @@ class GameManager:
                     'player_name': player_name,
                     'opponent_name': opponent_name,
                     'message': 'Reconnected! Place your ships.'
+                    # No need to send ship data here, they will place them again
                 })
         else:
-
+            # Game is in progress, send the ship layout
             self.send_message(client_id, {
                 'type': 'reconnect_success',
                 'phase': 'playing',
@@ -389,7 +398,8 @@ class GameManager:
                 'room_code': room_code,
                 'player_name': player_name,
                 'opponent_name': opponent_name,
-                'message': 'Reconnected to game!'
+                'message': 'Reconnected to game!',
+                'placed_ships': ships_placed # <-- SEND SHIP DATA
             })
             self.send_game_state_to_players(game_id)
 
@@ -589,8 +599,10 @@ class BattleshipServer:
             if all_placed:
                 if player_number == 1:
                     game_info['player1_ready'] = True
+                    game_info['player1_ships_placed'] = ships_data # <-- STORE SHIPS
                 else:
                     game_info['player2_ready'] = True
+                    game_info['player2_ships_placed'] = ships_data # <-- STORE SHIPS
                 
                 self.game_manager.send_message(client_id, {'type': 'ships_placed', 'success': True, 'message': 'Ships placed successfully!'})
                 self.game_manager.send_game_state_to_players(game_id)

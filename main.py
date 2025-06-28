@@ -18,7 +18,7 @@ SHIP_COLORS = {
     'B': (46, 134, 193), # Battleship - Blue
     'C': (241, 196, 15), # Cruiser - Yellow
     'S': (39, 174, 96),  # Submarine - Green
-    'D': (231, 76, 60)   # Destroyer - Red
+    'P': (231, 76, 60)   # PatrolBoat - Red
 }
 
 # Colors
@@ -138,7 +138,7 @@ class BattleshipGUI:
             {"name": "Battleship", "length": 4, "placed": False},
             {"name": "Cruiser", "length": 3, "placed": False},
             {"name": "Submarine", "length": 3, "placed": False},
-            {"name": "Destroyer", "length": 2, "placed": False}
+            {"name": "PatrolBoat", "length": 2, "placed": False}
         ]
         self.current_ship_index = 0
         self.ship_orientation = 'H'
@@ -151,9 +151,37 @@ class BattleshipGUI:
         self.host_game_inputs = {}
         self.join_game_inputs = {}
         self.spectate_game_buttons = []
+        
+        self.ship_data_map = {ship['name']: ship for ship in self.ships_to_place}
 
         self.setup_ui_elements()
+        self.load_ship_images()
         self.connect_to_server()
+
+    def load_ship_images(self):
+        self.ship_images = {}
+        # Map ship names from code to asset filenames
+        ship_asset_map = {
+            "AircraftCarrier": "assets/AircraftCarrier.png",
+            "Battleship": "assets/BattleShip.png",
+            "Cruiser": "assets/Cruiser.png",
+            "Submarine": "assets/Submarine.png",
+            "PatrolBoat": "assets/PatrolBoat.png",
+        }
+        for ship_data in self.ships_to_place:
+            name = ship_data['name']
+            path = ship_asset_map.get(name)
+            if not path:
+                print(f"Warning: No asset path found for {name}")
+                continue
+            try:
+                # Load the original image once
+                image = pygame.image.load(path).convert_alpha()
+                self.ship_images[name] = image
+            except pygame.error as e:
+                print(f"ERROR: Could not load image {path}: {e}")
+                self.ship_images[name] = None
+
 
     def setup_ui_elements(self):
         btn_width, btn_height = 200, 60
@@ -302,6 +330,10 @@ class BattleshipGUI:
             self.opponent_name = message.get('opponent_name', '')
             self.room_code = message.get('room_code', '')
             
+            # Restore placed ships data if provided
+            if 'placed_ships' in message:
+                self.placed_ships = message['placed_ships']
+            
             if phase == 'hosting':
                 self.game_phase = "waiting_room"
                 self.status_message = f"Reconnected! Hosting game with room code: {self.room_code}. Waiting for opponent..."
@@ -347,7 +379,7 @@ class BattleshipGUI:
             {"name": "Battleship", "length": 4, "placed": False},
             {"name": "Cruiser", "length": 3, "placed": False},
             {"name": "Submarine", "length": 3, "placed": False},
-            {"name": "Destroyer", "length": 2, "placed": False}
+            {"name": "PatrolBoat", "length": 2, "placed": False}
         ]
         self.current_ship_index = 0
         self.ship_orientation = 'H'
@@ -432,23 +464,48 @@ class BattleshipGUI:
         title_surface = self.big_font.render(title, True, BLACK)
         self.screen.blit(title_surface, (board_rect.centerx - title_surface.get_width() / 2, board_rect.top - 40))
         
+        # Draw the base grid and hits/misses
         for row_idx in range(BOARD_SIZE):
             for col_idx in range(BOARD_SIZE):
                 cell_rect = pygame.Rect(board_rect.x + col_idx * CELL_SIZE, board_rect.y + row_idx * CELL_SIZE, CELL_SIZE, CELL_SIZE)
                 cell_value = board[row_idx][col_idx]
                 
-                if cell_value == '.': color = WHITE
-                elif cell_value == 'X': color = RED
-                elif cell_value == 'O': color = GRAY
-                else: color = SHIP_COLORS.get(cell_value, LIGHT_GRAY)
+                # Draw white background for empty cells or cells with ships (under sprites)
+                pygame.draw.rect(self.screen, WHITE, cell_rect)
                 
-                pygame.draw.rect(self.screen, color, cell_rect)
-                pygame.draw.rect(self.screen, BLACK, cell_rect, 1)
-
+                # Draw markers for hits and misses
                 if cell_value == 'X':
+                    pygame.draw.rect(self.screen, RED, cell_rect) # Red background for hit
                     hit_surface = self.hit_marker_font.render('X', True, BLACK)
                     hit_rect = hit_surface.get_rect(center=cell_rect.center)
                     self.screen.blit(hit_surface, hit_rect)
+                elif cell_value == 'O':
+                    pygame.draw.rect(self.screen, LIGHT_GRAY, cell_rect) # Gray background for miss
+
+                # Draw grid lines on top
+                pygame.draw.rect(self.screen, BLACK, cell_rect, 1)
+
+
+    def draw_ship_sprites(self):
+        for ship in self.placed_ships:
+            name = ship['name']
+            orientation = ship['orientation']
+            original_image = self.ship_images.get(name)
+            ship_length = self.ship_data_map[name]['length']
+
+            if original_image:
+                if orientation == 'H':
+                    # Scale for horizontal
+                    scaled_image = pygame.transform.scale(original_image, (ship_length * CELL_SIZE, CELL_SIZE))
+                else: # 'V'
+                    # Rotate the original image first, then scale
+                    rotated_image = pygame.transform.rotate(original_image, 90)
+                    scaled_image = pygame.transform.scale(rotated_image, (CELL_SIZE, ship_length * CELL_SIZE))
+
+                x = self.own_board_rect.x + ship['start_col'] * CELL_SIZE
+                y = self.own_board_rect.y + ship['start_row'] * CELL_SIZE
+                self.screen.blit(scaled_image, (x, y))
+
 
     def draw_ship_placement_preview(self, mouse_pos):
         if self.current_ship_index >= len(self.ships_to_place):
@@ -701,10 +758,15 @@ class BattleshipGUI:
 
             elif self.game_phase == "placing_ships":
                 self.draw_board(self.own_board, self.own_board_rect, f"{self.player_name}'s Board")
+                self.draw_ship_sprites()
                 self.draw_ship_list()
                 self.draw_ship_placement_preview(pygame.mouse.get_pos())
             elif self.game_phase == "playing":
+                # Draw player's board and sprites
                 self.draw_board(self.own_board, self.own_board_rect, f"{self.player_name}'s Board")
+                self.draw_ship_sprites()
+                
+                # Draw opponent's board (no sprites)
                 self.draw_board(self.opponent_board, self.opponent_board_rect, f"{self.opponent_name}'s Board", True)
                 self.draw_scoreboard()
             elif self.game_phase == "spectating":

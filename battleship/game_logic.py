@@ -9,7 +9,7 @@ class BattleshipGame:
             "Battleship": 4,
             "Cruiser": 3,
             "Submarine": 3,
-            "Destroyer": 2
+            "PatrolBoat": 2
         }
         self.player1_board = [['.' for _ in range(self.board_size)] for _ in range(self.board_size)]
         self.player2_board = [['.' for _ in range(self.board_size)] for _ in range(self.board_size)]
@@ -17,7 +17,6 @@ class BattleshipGame:
         self.player2_ships = {}
 
     def place_ship(self, player_board, player_ships, ship_name, ship_length, start_row, start_col, orientation):
-        # orientation: 'H' for horizontal, 'V' for vertical
         if orientation == 'H':
             if start_col + ship_length > self.board_size:
                 return False
@@ -25,7 +24,7 @@ class BattleshipGame:
                 if player_board[start_row][col] != '.':
                     return False
             for col in range(start_col, start_col + ship_length):
-                player_board[start_row][col] = ship_name[0] # Use first letter of ship name as marker
+                player_board[start_row][col] = ship_name[0] 
             player_ships[ship_name] = [(start_row, c) for c in range(start_col, start_col + ship_length)]
         elif orientation == 'V':
             if start_row + ship_length > self.board_size:
@@ -67,9 +66,8 @@ class BattleshipGame:
                     ship_name_hit = name
                     break
 
-            opponent_board[row][col] = 'X' # Mark as hit
+            opponent_board[row][col] = 'X' 
             
-            # Check if ship is sunk
             sunk = True
             for r, c in opponent_ships[ship_name_hit]:
                 if opponent_board[r][c] != 'X':
@@ -80,7 +78,7 @@ class BattleshipGame:
             else:
                 return "Hit"
         else:
-            opponent_board[row][col] = 'O' # Mark as miss
+            opponent_board[row][col] = 'O'
             return "Miss"
 
     def check_game_over(self, board, ships):
@@ -112,7 +110,6 @@ if __name__ == '__main__':
     print("\nPlayer 2 Board:")
     game.print_board(game.player2_board)
 
-    # Example attacks
     print("\nAttacking Player 1's board:")
     print(game.attack(game.player1_board, game.player1_ships, 0, 0))
     print(game.attack(game.player1_board, game.player1_ships, 0, 1))
@@ -125,8 +122,6 @@ if __name__ == '__main__':
     print(game.attack(game.player2_board, game.player2_ships, 5, 5))
     game.print_board(game.player2_board)
 
-    # Corrected check_game_over logic for testing
-    # This part needs to be refined for actual game flow
     all_sunk_player1 = True
     for ship_name, positions in game.player1_ships.items():
         for r, c in positions:
