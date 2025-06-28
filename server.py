@@ -207,12 +207,13 @@ class BattleshipServer:
                 game_over = self.check_game_over(game_info)
                 turn_info = {'turn_start_time': game_info['turn_start_time'], 'turn_duration': 60}
 
+                # --- MODIFIED: Added row and col to messages ---
                 # Notify attacker
-                self.send_message(client_id, {'type': 'attack_result', 'success': True, 'result': result, 'your_turn': False, 'game_over': game_over, 'sunk_ship_info': sunk_ship_info, **turn_info})
+                self.send_message(client_id, {'type': 'attack_result', 'success': True, 'result': result, 'your_turn': False, 'game_over': game_over, 'sunk_ship_info': sunk_ship_info, 'row': row, 'col': col, **turn_info})
                 
                 # Notify opponent
                 opponent_id = game_info['player2'] if player_number == 1 else game_info['player1']
-                self.send_message(opponent_id, {'type': 'opponent_attack', 'result': result, 'your_turn': not game_over, 'game_over': game_over, 'sunk_ship_info': sunk_ship_info, **turn_info})
+                self.send_message(opponent_id, {'type': 'opponent_attack', 'result': result, 'your_turn': not game_over, 'game_over': game_over, 'sunk_ship_info': sunk_ship_info, 'row': row, 'col': col, **turn_info})
                 
                 if game_over:
                     winner = f"Player {player_number}"
@@ -302,4 +303,3 @@ class BattleshipServer:
 if __name__ == '__main__':
     server = BattleshipServer('0.0.0.0', 8888)
     server.start()
-

@@ -37,6 +37,8 @@ class BattleshipGUI:
         self.clock = pygame.time.Clock()
         self.font = pygame.font.Font(None, 24)
         self.big_font = pygame.font.Font(None, 36)
+        # --- ADDED: Font for the hit marker ---
+        self.hit_marker_font = pygame.font.Font(None, int(CELL_SIZE * 1.2))
         
         self.client = BattleshipClient()
         self.client.add_message_callback(self.handle_server_message)
@@ -48,7 +50,6 @@ class BattleshipGUI:
         self.player_number = None
         self.status_message = "Connecting to server..."
         
-        # --- MODIFIED: Added state for scoreboard and timer ---
         self.own_sunk_ships = []
         self.opponent_sunk_ships = []
         self.turn_start_time = 0
@@ -71,7 +72,6 @@ class BattleshipGUI:
     def handle_server_message(self, message):
         msg_type = message.get('type')
         
-        # --- ADDED: Handle sunk ship and timer info ---
         sunk_info = message.get('sunk_ship_info')
         if sunk_info:
             if sunk_info['player'] == self.player_number:
@@ -98,12 +98,31 @@ class BattleshipGUI:
         elif msg_type == 'game_start':
             self.game_phase = "playing"
             self.status_message = message['message']
+        
+        # --- MODIFIED: Handle attack results to update boards immediately ---
         elif msg_type == 'attack_result':
             self.status_message = f"Attack result: {message['result']}"
-            if message.get('game_over'): self.game_phase = "game_over"
+            if message.get('success'):
+                row, col = message['row'], message['col']
+                result = message['result']
+                if "sunk" in result or "Hit" in result:
+                    self.opponent_board[row][col] = 'X'
+                elif "Miss" in result:
+                    self.opponent_board[row][col] = 'O'
+            if message.get('game_over'):
+                self.game_phase = "game_over"
+
         elif msg_type == 'opponent_attack':
             self.status_message = f"Opponent attacked: {message['result']}"
-            if message.get('game_over'): self.game_phase = "game_over"
+            row, col = message['row'], message['col']
+            result = message['result']
+            if "sunk" in result or "Hit" in result:
+                self.own_board[row][col] = 'X'
+            elif "Miss" in result:
+                self.own_board[row][col] = 'O'
+            if message.get('game_over'):
+                self.game_phase = "game_over"
+                
         elif msg_type == 'turn_timeout':
             self.status_message = message['message']
         elif msg_type == 'game_over':
@@ -136,14 +155,19 @@ class BattleshipGUI:
                 cell_rect = pygame.Rect(board_rect.x + col * CELL_SIZE, board_rect.y + row * CELL_SIZE, CELL_SIZE, CELL_SIZE)
                 cell_value = board[row][col]
                 
-                # --- MODIFIED: Color for misses is now GRAY ---
                 if cell_value == '.': color = WHITE
                 elif cell_value == 'X': color = RED
-                elif cell_value == 'O': color = GRAY # Changed from BLUE
+                elif cell_value == 'O': color = GRAY
                 else: color = SHIP_COLORS.get(cell_value, LIGHT_GRAY)
                 
                 pygame.draw.rect(self.screen, color, cell_rect)
                 pygame.draw.rect(self.screen, BLACK, cell_rect, 1)
+
+                # --- MODIFIED: Add a visual 'X' marker for hits on both boards ---
+                if cell_value == 'X':
+                    hit_surface = self.hit_marker_font.render('X', True, BLACK)
+                    hit_rect = hit_surface.get_rect(center=cell_rect.center)
+                    self.screen.blit(hit_surface, hit_rect)
 
     def draw_ship_placement_preview(self, mouse_pos):
         if self.current_ship_index >= len(self.ships_to_place):
@@ -153,7 +177,6 @@ class BattleshipGUI:
         if ship['placed']:
             return
         
-        # Convert mouse position to board coordinates
         if self.own_board_rect.collidepoint(mouse_pos):
             rel_x = mouse_pos[0] - self.own_board_rect.x
             rel_y = mouse_pos[1] - self.own_board_rect.y
@@ -161,7 +184,6 @@ class BattleshipGUI:
             row = rel_y // CELL_SIZE
             
             if 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE:
-                # Check if ship can be placed
                 can_place = True
                 cells_to_highlight = []
                 
@@ -182,7 +204,6 @@ class BattleshipGUI:
                                 can_place = False
                             cells_to_highlight.append((r, col))
                 
-                # Draw preview
                 color = GREEN if can_place else RED
                 for r, c in cells_to_highlight:
                     cell_rect = pygame.Rect(
@@ -201,7 +222,6 @@ class BattleshipGUI:
         if ship['placed']:
             return
         
-        # Convert mouse position to board coordinates
         if self.own_board_rect.collidepoint(mouse_pos):
             rel_x = mouse_pos[0] - self.own_board_rect.x
             rel_y = mouse_pos[1] - self.own_board_rect.y
@@ -209,7 +229,6 @@ class BattleshipGUI:
             row = rel_y // CELL_SIZE
             
             if 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE:
-                # Check if ship can be placed
                 can_place = True
                 cells_to_place = []
                 
@@ -231,7 +250,6 @@ class BattleshipGUI:
                             cells_to_place.append((r, col))
                 
                 if can_place:
-                    # Place the ship
                     ship_char = ship['name'][0]
                     for r, c in cells_to_place:
                         self.own_board[r][c] = ship_char
@@ -244,10 +262,8 @@ class BattleshipGUI:
                         'orientation': self.ship_orientation
                     })
                     
-                    # Move to next ship
                     self.current_ship_index += 1
                     
-                    # Check if all ships are placed
                     if self.current_ship_index >= len(self.ships_to_place):
                         self.client.place_ships(self.placed_ships)
                         self.status_message = "All ships placed! Waiting for opponent..."
@@ -256,7 +272,6 @@ class BattleshipGUI:
         if not self.your_turn or self.game_phase != "playing":
             return
         
-        # Convert mouse position to board coordinates
         if self.opponent_board_rect.collidepoint(mouse_pos):
             rel_x = mouse_pos[0] - self.opponent_board_rect.x
             rel_y = mouse_pos[1] - self.opponent_board_rect.y
@@ -264,7 +279,6 @@ class BattleshipGUI:
             row = rel_y // CELL_SIZE
             
             if 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE:
-                # Check if cell was already attacked
                 if self.opponent_board[row][col] in ['.']:
                     self.client.attack(row, col)
 
@@ -284,7 +298,6 @@ class BattleshipGUI:
         self.screen.blit(status_surface, (WINDOW_WIDTH / 2 - status_surface.get_width() / 2, 10))
         
         if self.game_phase == "playing":
-            # --- MODIFIED: Display turn and timer ---
             turn_text = "Your Turn" if self.your_turn else "Opponent's Turn"
             turn_color = GREEN if self.your_turn else RED
             
@@ -295,7 +308,6 @@ class BattleshipGUI:
             turn_surface = self.font.render(full_text, True, turn_color)
             self.screen.blit(turn_surface, (WINDOW_WIDTH / 2 - turn_surface.get_width() / 2, 50))
     
-    # --- ADDED: New method to draw the scoreboard ---
     def draw_scoreboard(self):
         scoreboard_y = self.own_board_rect.bottom + 20
         
@@ -304,7 +316,6 @@ class BattleshipGUI:
             self.screen.blit(title_surf, (x_pos, y_pos))
             for i, ship_name in enumerate(ships):
                 ship_surf = self.font.render(ship_name, True, color)
-                # Draw a strikethrough
                 pygame.draw.line(self.screen, color, (x_pos, y_pos + (i + 1) * 25 + 10), (x_pos + ship_surf.get_width(), y_pos + (i + 1) * 25 + 10), 2)
                 self.screen.blit(ship_surf, (x_pos, y_pos + (i + 1) * 25))
 
@@ -334,7 +345,6 @@ class BattleshipGUI:
             elif self.game_phase in ["playing", "game_over"]:
                 self.draw_board(self.own_board, self.own_board_rect, "Your Board")
                 self.draw_board(self.opponent_board, self.opponent_board_rect, "Opponent's Board", True)
-                # --- ADDED: Call to draw scoreboard ---
                 self.draw_scoreboard()
             
             pygame.display.flip()
@@ -347,4 +357,3 @@ class BattleshipGUI:
 if __name__ == '__main__':
     game = BattleshipGUI()
     game.run()
-
