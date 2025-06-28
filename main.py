@@ -14,9 +14,9 @@ BOARD_SIZE = 10
 CELL_SIZE = 40
 BOARD_MARGIN = 50
 SHIP_COLORS = {
-    'C': (142, 68, 173), # Carrier - Purple
+    'A': (142, 68, 173), # AircraftCarrier - Purple
     'B': (46, 134, 193), # Battleship - Blue
-    'R': (241, 196, 15), # Cruiser - Yellow
+    'C': (241, 196, 15), # Cruiser - Yellow
     'S': (39, 174, 96),  # Submarine - Green
     'D': (231, 76, 60)   # Destroyer - Red
 }
@@ -134,7 +134,7 @@ class BattleshipGUI:
 
 
         self.ships_to_place = [
-            {"name": "Carrier", "length": 5, "placed": False},
+            {"name": "AircraftCarrier", "length": 5, "placed": False},
             {"name": "Battleship", "length": 4, "placed": False},
             {"name": "Cruiser", "length": 3, "placed": False},
             {"name": "Submarine", "length": 3, "placed": False},
@@ -343,7 +343,7 @@ class BattleshipGUI:
 
     def reset_ship_placement(self):
         self.ships_to_place = [
-            {"name": "Carrier", "length": 5, "placed": False},
+            {"name": "AircraftCarrier", "length": 5, "placed": False},
             {"name": "Battleship", "length": 4, "placed": False},
             {"name": "Cruiser", "length": 3, "placed": False},
             {"name": "Submarine", "length": 3, "placed": False},

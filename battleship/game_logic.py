@@ -1,10 +1,11 @@
+# game_logic.py
 import random
 
 class BattleshipGame:
     def __init__(self):
         self.board_size = 10
         self.ships = {
-            "Carrier": 5,
+            "AircraftCarrier": 5,
             "Battleship": 4,
             "Cruiser": 3,
             "Submarine": 3,
@@ -151,5 +152,3 @@ if __name__ == '__main__':
         print("Player 2's ships are all sunk! Game Over.")
     else:
         print("Player 2's ships are not all sunk.")
-
-
