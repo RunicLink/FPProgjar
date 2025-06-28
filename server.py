@@ -130,7 +130,7 @@ class BattleshipHttpServer:
                 time_remaining = max(0, RECONNECT_WINDOW_SECONDS - elapsed)
 
                 # Overwrite the status message with our dynamic countdown.
-                current_status_message = f"Game Paused. Waiting {int(time_remaining)} seconds for the other player to reconnect."
+                current_status_message = f"Game Paused. Waiting {int(time_remaining)} seconds for the other player to reconnect. Room code: {game['game_id']}"
 
             opponent_number = 2 if player_number == 1 else 1
 
