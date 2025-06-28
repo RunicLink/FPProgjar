@@ -2,7 +2,7 @@ import pygame
 import sys
 import json
 import time
-from client_network import BattleshipClient
+from battleship.client_network import BattleshipClient
 
 # Initialize Pygame
 pygame.init()

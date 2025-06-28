@@ -82,11 +82,17 @@ class BattleshipGame:
             opponent_board[row][col] = 'O' # Mark as miss
             return "Miss"
 
-    def check_game_over(self, opponent_ships):
-        for ship_name, positions in opponent_ships.items():
+    def check_game_over(self, board, ships):
+        """
+        Memeriksa apakah semua kapal di papan yang diberikan sudah tenggelam.
+        Mengembalikan True jika game berakhir, False jika tidak.
+        """
+        if not ships:
+            return False
+            
+        for ship_name, positions in ships.items():
             for r, c in positions:
-                # If any part of any ship is not hit, the game is not over
-                if self.player1_board[r][c] != 'X' and self.player2_board[r][c] != 'X': # This logic is incorrect, should check the opponent's board
+                if board[r][c] != 'X':
                     return False
         return True
 

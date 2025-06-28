@@ -3,7 +3,7 @@ import threading
 import json
 import uuid
 import time
-from game_logic import BattleshipGame
+from battleship.game_logic import BattleshipGame
 
 class BattleshipServer:
     def __init__(self, host='localhost', port=8888):
@@ -223,9 +223,15 @@ class BattleshipServer:
 
     def check_game_over(self, game_info):
         game = game_info['game']
-        # Correctly check if all ships for a player are sunk
-        return all(all(game.player1_board[r][c] == 'X' for r, c in pos) for pos in game.player1_ships.values()) or \
-               all(all(game.player2_board[r][c] == 'X' for r, c in pos) for pos in game.player2_ships.values())
+        p1_wins = game.check_game_over(game.player2_board, game.player2_ships)
+        if p1_wins:
+            return True
+        
+        p2_wins = game.check_game_over(game.player1_board, game.player1_ships)
+        if p2_wins:
+            return True
+            
+        return False
 
     def send_game_state(self, client_id):
         with self.lock:
