@@ -5,7 +5,6 @@ import json
 import time
 import socket
 
-# --- NEW HTTP CLIENT ---
 class BattleshipHttpClient:
     """A client to interact with the Battleship HTTP server."""
     def __init__(self, host='localhost', port=8889):
@@ -109,6 +108,74 @@ class BattleshipHttpClient:
         response = self._send_request('GET', path)
         if response:
             self._notify_listeners(response)
+
+    def quick_match(self, player_name):
+        """Start looking for a quick match"""
+        # Reset state for new game
+        self.game_id = None
+        self.player_number = None
+        self.player_name = player_name
+        
+        print(f"DEBUG: Starting quick match for {player_name}")
+        response = self._send_request('POST', '/api/quick_match', {'player_name': player_name})
+        print(f"DEBUG: Quick match response: {response}")
+        
+        if response:
+            if response.get('matched'):
+                # Match found immediately
+                self.game_id = response['game_id']
+                self.player_number = response['player_number']
+                print(f"DEBUG: Match found immediately! Game ID: {self.game_id}, Player: {self.player_number}")
+                self._notify_listeners({
+                    'type': 'quick_match_found',
+                    'opponent_name': response['opponent_name']
+                })
+                self.get_game_state()
+            else:
+                # Waiting for opponent
+                print("DEBUG: Waiting for opponent")
+                self._notify_listeners({'type': 'quick_match_waiting'})
+        else:
+            print("DEBUG: Quick match request failed")
+            self._notify_listeners({'type': 'error', 'message': 'Could not start quick match.'})
+
+    def cancel_quick_match(self):
+        """Cancel quick match search"""
+        if not self.player_name:
+            return
+        response = self._send_request('POST', '/api/cancel_quick_match', {'player_name': self.player_name})
+        if response and response.get('cancelled'):
+            self._notify_listeners({'type': 'quick_match_cancelled'})
+        else:
+            self._notify_listeners({'type': 'error', 'message': 'Could not cancel quick match.'})
+
+    def check_quick_match_status(self):
+        """Check if a quick match has been found while waiting"""
+        if not self.player_name:
+            return
+        
+        print(f"DEBUG: Checking quick match status for {self.player_name}")
+        response = self._send_request('POST', '/api/check_quick_match', {'player_name': self.player_name})
+        print(f"DEBUG: Quick match status response: {response}")
+        
+        if response:
+            if response.get('matched'):
+                self.game_id = response['game_id']
+                self.player_number = response['player_number']
+                print(f"DEBUG: Match found! Game ID: {self.game_id}, Player: {self.player_number}")
+                self._notify_listeners({
+                    'type': 'quick_match_found',
+                    'opponent_name': response['opponent_name']
+                })
+                self.get_game_state()
+            elif response.get('waiting'):
+                # Still waiting
+                print("DEBUG: Still waiting for opponent")
+                pass
+        else:
+            # No longer in queue or error
+            print("DEBUG: No longer in queue, cancelling")
+            self._notify_listeners({'type': 'quick_match_cancelled'})
     
     def _notify_listeners(self, message):
         for callback in self.message_callbacks:
@@ -207,6 +274,7 @@ class BattleshipGUI:
 
         self.game_phase = "main_menu"
         self.disconnected = False
+        self.quick_match_last_check = 0  # Add timing for quick match polling
         self.reset_game_state()
         self.setup_ui_elements()
         self.load_ship_images()
@@ -257,6 +325,9 @@ class BattleshipGUI:
             self.own_sunk_ships = message.get('own_sunk_ships', self.own_sunk_ships)
             self.opponent_sunk_ships = message.get('opponent_sunk_ships', self.opponent_sunk_ships)
 
+            if message.get('game_phase') != 'placing_ships':
+                self.placed_ships = message.get('placed_ships', self.placed_ships)
+
             if self.client.game_id:
                 self.room_code = self.client.game_id
             if self.game_phase == 'waiting_room':
@@ -280,13 +351,25 @@ class BattleshipGUI:
             self.disconnected = False
             self.status_message = "Reconnected successfully!"
 
+        elif msg_type == 'quick_match_waiting':
+            self.game_phase = "quick_match_waiting"
+            self.status_message = "Looking for opponent..."
+
+        elif msg_type == 'quick_match_found':
+            self.status_message = f"Match found! Playing against {message.get('opponent_name', 'opponent')}"
+            self.game_phase = "placing_ships"
+
+        elif msg_type == 'quick_match_cancelled':
+            self.status_message = "Quick match cancelled."
+            self.game_phase = "main_menu"
+
 
     def run(self):
         running = True
         while running:
             mouse_pos = pygame.mouse.get_pos()
             
-            if self.client.game_id and time.time() - self.client.last_successful_poll > 10:
+            if self.client.game_id and time.time() - self.client.last_successful_poll > 6:  # 6 seconds timeout
                 self.disconnected = True
                 self.status_message = "Disconnected. Click to reconnect."
 
@@ -300,8 +383,14 @@ class BattleshipGUI:
                     continue
 
                 if event.type == self.POLL_GAME_STATE_EVENT:
-                    if self.client.game_id and self.game_phase not in ["main_menu", "host_game", "join_game"]:
+                    if self.client.game_id and self.game_phase not in ["main_menu", "host_game", "join_game", "quick_match"]:
                         self.client.get_game_state()
+                    elif self.game_phase == "quick_match_waiting":
+                        # Poll for quick match status but less frequently
+                        current_time = time.time()
+                        if current_time - self.quick_match_last_check >= 2:  # Check every 2 seconds
+                            self.quick_match_last_check = current_time
+                            self.client.check_quick_match_status()
 
                 if self.game_phase == "main_menu":
                     for button in self.main_menu_buttons: button.handle_event(event)
@@ -314,6 +403,13 @@ class BattleshipGUI:
                     self.join_game_inputs['code_input'].handle_event(event)
                     self.join_game_inputs['join_button'].handle_event(event)
                     self.join_game_inputs['back_button'].handle_event(event)
+                elif self.game_phase == "quick_match":
+                    self.quick_match_inputs['name_input'].handle_event(event)
+                    self.quick_match_inputs['quick_match_button'].handle_event(event)
+                    self.quick_match_inputs['back_button'].handle_event(event)
+                elif self.game_phase == "quick_match_waiting":
+                    self.quick_match_waiting_inputs['cancel_button'].handle_event(event)
+                    self.quick_match_waiting_inputs['back_button'].handle_event(event)
                 elif self.game_phase == "placing_ships":
                     if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
                         self.ship_orientation = 'V' if self.ship_orientation == 'H' else 'H'
@@ -333,14 +429,44 @@ class BattleshipGUI:
             elif self.game_phase == "main_menu":
                 for button in self.main_menu_buttons: button.draw(self.screen)
             elif self.game_phase == "host_game":
+                title_text = self.big_font.render("Host Game", True, BLACK)
+                self.screen.blit(title_text, (WINDOW_WIDTH // 2 - title_text.get_width() // 2, WINDOW_HEIGHT // 2 - 120))
+                name_label = self.font.render("Enter your name:", True, BLACK)
+                self.screen.blit(name_label, (WINDOW_WIDTH // 2 - 150, WINDOW_HEIGHT // 2 - 80))
                 self.host_game_inputs['name_input'].draw(self.screen)
                 self.host_game_inputs['host_button'].draw(self.screen)
                 self.host_game_inputs['back_button'].draw(self.screen)
             elif self.game_phase == "join_game":
+                title_text = self.big_font.render("Join/Reconnect Game", True, BLACK)
+                self.screen.blit(title_text, (WINDOW_WIDTH // 2 - title_text.get_width() // 2, WINDOW_HEIGHT // 2 - 150))
+                name_label = self.font.render("Enter your name:", True, BLACK)
+                self.screen.blit(name_label, (WINDOW_WIDTH // 2 - 150, WINDOW_HEIGHT // 2 - 130))
+                code_label = self.font.render("Enter room code:", True, BLACK)
+                self.screen.blit(code_label, (WINDOW_WIDTH // 2 - 150, WINDOW_HEIGHT // 2 - 70))
                 self.join_game_inputs['name_input'].draw(self.screen)
                 self.join_game_inputs['code_input'].draw(self.screen)
                 self.join_game_inputs['join_button'].draw(self.screen)
                 self.join_game_inputs['back_button'].draw(self.screen)
+            elif self.game_phase == "quick_match":
+                title_text = self.big_font.render("Quick Match", True, BLACK)
+                self.screen.blit(title_text, (WINDOW_WIDTH // 2 - title_text.get_width() // 2, WINDOW_HEIGHT // 2 - 120))
+                name_label = self.font.render("Enter your name:", True, BLACK)
+                self.screen.blit(name_label, (WINDOW_WIDTH // 2 - 150, WINDOW_HEIGHT // 2 - 80))
+                self.quick_match_inputs['name_input'].draw(self.screen)
+                self.quick_match_inputs['quick_match_button'].draw(self.screen)
+                self.quick_match_inputs['back_button'].draw(self.screen)
+            elif self.game_phase == "quick_match_waiting":
+                title_text = self.big_font.render("Finding Match...", True, BLACK)
+                self.screen.blit(title_text, (WINDOW_WIDTH // 2 - title_text.get_width() // 2, WINDOW_HEIGHT // 2 - 80))
+                wait_text = self.font.render("Please wait while we find you an opponent", True, BLACK)
+                self.screen.blit(wait_text, (WINDOW_WIDTH // 2 - wait_text.get_width() // 2, WINDOW_HEIGHT // 2 - 40))
+                # Draw a simple animation (rotating dots)
+                dots = [".", "..", "...", "....", "....."]
+                dot_index = (pygame.time.get_ticks() // 300) % len(dots)
+                dots_text = self.font.render(dots[dot_index], True, BLACK)
+                self.screen.blit(dots_text, (WINDOW_WIDTH // 2 - dots_text.get_width() // 2, WINDOW_HEIGHT // 2 - 10))
+                self.quick_match_waiting_inputs['cancel_button'].draw(self.screen)
+                self.quick_match_waiting_inputs['back_button'].draw(self.screen)
             elif self.game_phase == "waiting_room":
                 if self.room_code:
                     code_text = self.big_font.render(f"Room Code: {self.room_code}", True, BLACK)
@@ -386,10 +512,11 @@ class BattleshipGUI:
 
     def setup_ui_elements(self):
         btn_width, btn_height, spacing = 200, 60, 20
-        start_y = WINDOW_HEIGHT // 2 - (btn_height * 1.5 + spacing)
+        start_y = WINDOW_HEIGHT // 2 - (btn_height * 2 + spacing * 1.5)
         self.main_menu_buttons = [
             Button(WINDOW_WIDTH // 2 - btn_width // 2, start_y, btn_width, btn_height, "Host Game", BLUE, ORANGE, self.go_to_host_game),
-            Button(WINDOW_WIDTH // 2 - btn_width // 2, start_y + btn_height + spacing, btn_width, btn_height, "Join/Reconnect", BLUE, ORANGE, self.go_to_join_game)
+            Button(WINDOW_WIDTH // 2 - btn_width // 2, start_y + btn_height + spacing, btn_width, btn_height, "Quick Match", GREEN, ORANGE, self.go_to_quick_match),
+            Button(WINDOW_WIDTH // 2 - btn_width // 2, start_y + (btn_height + spacing) * 2, btn_width, btn_height, "Join/Reconnect", BLUE, ORANGE, self.go_to_join_game)
         ]
         self.host_game_inputs = {
             'name_input': InputBox(WINDOW_WIDTH // 2 - 150, WINDOW_HEIGHT // 2 - 50, 300, 40, ''),
@@ -402,6 +529,15 @@ class BattleshipGUI:
             'join_button': Button(WINDOW_WIDTH // 2 - 100, WINDOW_HEIGHT // 2 + 50, 200, 50, "Join/Reconnect", GREEN, ORANGE, self.join_private_game),
             'back_button': Button(50, 50, 100, 40, "Back", GRAY, ORANGE, self.go_to_main_menu)
         }
+        self.quick_match_inputs = {
+            'name_input': InputBox(WINDOW_WIDTH // 2 - 150, WINDOW_HEIGHT // 2 - 50, 300, 40, ''),
+            'quick_match_button': Button(WINDOW_WIDTH // 2 - 100, WINDOW_HEIGHT // 2 + 50, 200, 50, "Find Match", GREEN, ORANGE, self.start_quick_match),
+            'back_button': Button(50, 50, 100, 40, "Back", GRAY, ORANGE, self.go_to_main_menu)
+        }
+        self.quick_match_waiting_inputs = {
+            'cancel_button': Button(WINDOW_WIDTH // 2 - 100, WINDOW_HEIGHT // 2 + 100, 200, 50, "Cancel", RED, ORANGE, self.cancel_quick_match_search),
+            'back_button': Button(50, 50, 100, 40, "Back", GRAY, ORANGE, self.cancel_quick_match_search)
+        }
         self.own_board_rect = pygame.Rect(BOARD_MARGIN, BOARD_MARGIN + 100, BOARD_SIZE * CELL_SIZE, BOARD_SIZE * CELL_SIZE)
         self.opponent_board_rect = pygame.Rect(WINDOW_WIDTH - BOARD_MARGIN - BOARD_SIZE * CELL_SIZE, BOARD_MARGIN + 100, BOARD_SIZE * CELL_SIZE, BOARD_SIZE * CELL_SIZE)
         self.main_menu_button = Button(WINDOW_WIDTH // 2 - 100, WINDOW_HEIGHT // 2 + 50, 200, 50, "Main Menu", BLUE, ORANGE, self.go_to_main_menu)
@@ -410,6 +546,32 @@ class BattleshipGUI:
     def go_to_main_menu(self): self.game_phase = "main_menu"; self.reset_game_state(); self.client = BattleshipHttpClient(); self.client.add_message_callback(self.handle_server_message)
     def go_to_host_game(self): self.game_phase = "host_game"; self.status_message = "Enter your name to host a game."
     def go_to_join_game(self): self.game_phase = "join_game"; self.status_message = "Enter name and code to join or reconnect."
+    def go_to_quick_match(self): 
+        self.game_phase = "quick_match"
+        self.status_message = "Enter your name for quick match."
+        # Clear previous game state
+        self.client.game_id = None
+        self.client.player_number = None
+        self.reset_game_state()
+
+    def start_quick_match(self):
+        player_name = self.quick_match_inputs['name_input'].get_text().strip()
+        if player_name:
+            # Reset client state before starting new quick match
+            self.client.game_id = None
+            self.client.player_number = None
+            self.reset_game_state()
+            self.quick_match_last_check = time.time()  # Reset quick match timer
+            
+            self.client.quick_match(player_name)
+            self.game_phase = "quick_match_waiting"
+            self.status_message = "Looking for opponent..."
+        else:
+            self.status_message = "Please enter your name."
+
+    def cancel_quick_match_search(self):
+        self.client.cancel_quick_match()
+        self.go_to_main_menu()
 
     def host_private_game(self):
         player_name = self.host_game_inputs['name_input'].get_text().strip()
@@ -493,7 +655,7 @@ class BattleshipGUI:
         
         if not sunk_ships:
             none_surf = self.scoreboard_font.render("None", True, GRAY)
-            self.screen.blit(none_surf, (board_rect.left + 80, y_start))
+            self.screen.blit(none_surf, (board_rect.left + 100, y_start))
 
         for i, ship_name in enumerate(sunk_ships):
             ship_surf = self.scoreboard_font.render(ship_name, True, RED)

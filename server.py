@@ -7,16 +7,18 @@ import time
 import logging
 from battleship.game_logic import BattleshipGame
 
-# --- Basic Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# We'll store all game states in memory.
 GAMES = {}
 GAME_LOGIC = BattleshipGame()
-TURN_TIMEOUT = 60  # 60 seconds per turn
-CLIENT_INACTIVITY_TIMEOUT = 30 # 30 seconds of inactivity before marking as disconnected
+TURN_TIMEOUT = 60 
+CLIENT_INACTIVITY_TIMEOUT = 5  # 10 seconds of inactivity before marking as disconnected
 
-# --- Main HTTP Server Class ---
+# Quick Match Queue - stores players waiting for quick match
+QUICK_MATCH_QUEUE = []
+QUICK_MATCH_TIMEOUT = 120  # 2 minutes timeout for quick match queue
+QUICK_MATCH_LOCK = threading.Lock()  # Thread lock for queue operations
+
 class BattleshipHttpServer:
     """
     An HTTP server that handles the game logic for Battleship.
@@ -162,6 +164,16 @@ class BattleshipHttpServer:
         if path == '/api/host':
             return self.handle_host(payload)
 
+        # Quick Match endpoints
+        if path == '/api/quick_match':
+            return self.handle_quick_match(payload)
+            
+        if path == '/api/cancel_quick_match':
+            return self.handle_cancel_quick_match(payload)
+            
+        if path == '/api/check_quick_match':
+            return self.handle_check_quick_match(payload)
+
         # *** FIX: Consolidate join and reconnect logic ***
         if path == '/api/reconnect' or path == '/api/join':
             return self.handle_join_or_reconnect(payload)
@@ -290,6 +302,120 @@ class BattleshipHttpServer:
 
         return self.response(200, 'OK', {'result': result})
 
+    def handle_quick_match(self, payload):
+        """Handle quick match request - join queue and try to match with other players"""
+        player_name = payload.get('player_name')
+        if not player_name:
+            return self.response(400, 'Bad Request', {'error': 'Player name is required'})
+        
+        with QUICK_MATCH_LOCK:
+            # Remove player from any finished games to avoid conflicts
+            games_to_clean = []
+            for game_id, game in GAMES.items():
+                if game['phase'] == 'game_over':
+                    for player_num, player_data in game['players'].items():
+                        if player_data['name'] == player_name:
+                            games_to_clean.append(game_id)
+                            break
+            
+            for game_id in games_to_clean:
+                if game_id in GAMES:
+                    del GAMES[game_id]
+                    logging.info(f"Cleaned up finished game {game_id} for player {player_name}")
+            
+            # Check if player is already in queue
+            for queued_player in QUICK_MATCH_QUEUE:
+                if queued_player['name'] == player_name:
+                    return self.response(400, 'Bad Request', {'error': 'Already in quick match queue'})
+            
+            # Try to match with another player first
+            if len(QUICK_MATCH_QUEUE) >= 1:
+                # Get the first player from queue
+                player1 = QUICK_MATCH_QUEUE.pop(0)
+                player2 = {'name': player_name, 'timestamp': time.time()}
+                
+                # Create game
+                game_id = str(uuid.uuid4())[:8]
+                GAMES[game_id] = {
+                    'game_id': game_id,
+                    'players': {
+                        1: {'name': player1['name'], 'ships_placed': False, 'connected': True, 'last_activity': time.time(), 'placed_ships_data': []},
+                        2: {'name': player2['name'], 'ships_placed': False, 'connected': True, 'last_activity': time.time(), 'placed_ships_data': []}
+                    },
+                    'player_boards': {1: [['.' for _ in range(10)] for _ in range(10)], 2: [['.' for _ in range(10)] for _ in range(10)]},
+                    'player_ships': {1: {}, 2: {}},
+                    'sunk_ships': {1: [], 2: []},
+                    'turn': 1,
+                    'phase': 'placing_ships',
+                    'status_message': 'Quick match found! Place your ships.',
+                    'turn_start_time': 0,
+                    'is_quick_match': True
+                }
+                
+                logging.info(f"Quick match created: {game_id} with {player1['name']} vs {player2['name']}")
+                
+                # Return game info for the requesting player (player2 in this case)
+                return self.response(200, 'OK', {
+                    'game_id': game_id, 
+                    'player_number': 2,
+                    'matched': True,
+                    'opponent_name': player1['name']
+                })
+            else:
+                # Add player to queue
+                queue_entry = {
+                    'name': player_name,
+                    'timestamp': time.time()
+                }
+                QUICK_MATCH_QUEUE.append(queue_entry)
+                logging.info(f"Player {player_name} joined quick match queue")
+                
+                # Still waiting for opponent
+                return self.response(200, 'OK', {'matched': False, 'waiting': True})
+
+    def handle_cancel_quick_match(self, payload):
+        """Handle cancel quick match request"""
+        player_name = payload.get('player_name')
+        if not player_name:
+            return self.response(400, 'Bad Request', {'error': 'Player name is required'})
+        
+        with QUICK_MATCH_LOCK:
+            # Remove player from queue
+            for i, queued_player in enumerate(QUICK_MATCH_QUEUE):
+                if queued_player['name'] == player_name:
+                    QUICK_MATCH_QUEUE.pop(i)
+                    logging.info(f"Player {player_name} cancelled quick match")
+                    return self.response(200, 'OK', {'cancelled': True})
+        
+        return self.response(404, 'Not Found', {'error': 'Not in quick match queue'})
+
+    def handle_check_quick_match(self, payload):
+        """Check if a quick match has been found for the player"""
+        player_name = payload.get('player_name')
+        if not player_name:
+            return self.response(400, 'Bad Request', {'error': 'Player name is required'})
+        
+        with QUICK_MATCH_LOCK:
+            # Check if player is still in queue
+            for queued_player in QUICK_MATCH_QUEUE:
+                if queued_player['name'] == player_name:
+                    return self.response(200, 'OK', {'matched': False, 'waiting': True})
+        
+        # Check if player is in a quick match game (but only active games)
+        for game_id, game in GAMES.items():
+            if game.get('is_quick_match', False) and game['phase'] != 'game_over':
+                for player_num, player_data in game['players'].items():
+                    if player_data['name'] == player_name:
+                        opponent_num = 2 if player_num == 1 else 1
+                        return self.response(200, 'OK', {
+                            'matched': True,
+                            'game_id': game_id,
+                            'player_number': player_num,
+                            'opponent_name': game['players'][opponent_num]['name']
+                        })
+        
+        return self.response(404, 'Not Found', {'error': 'Not in quick match queue or game'})
+
 
 def game_housekeeping():
     """
@@ -298,9 +424,14 @@ def game_housekeeping():
     while True:
         games_to_remove = []
         for game_id, game in list(GAMES.items()):
-            if game['phase'] == 'game_over' and time.time() - game.get('turn_start_time', 0) > 300:
-                games_to_remove.append(game_id)
-                continue
+            # Remove quick match games immediately when they're over
+            if game['phase'] == 'game_over':
+                if game.get('is_quick_match', False):
+                    games_to_remove.append(game_id)
+                    continue
+                elif time.time() - game.get('turn_start_time', 0) > 300:  # 5 minutes for regular games
+                    games_to_remove.append(game_id)
+                    continue
 
             if game['phase'] == 'playing':
                 time_since_turn_start = time.time() - game.get('turn_start_time', 0)
@@ -321,6 +452,17 @@ def game_housekeeping():
                     player_data['connected'] = False
                     logging.info(f"Game {game_id}: Player {player_data['name']} marked as disconnected.")
                     
+                    # For quick match games, end the game immediately if a player disconnects
+                    if game.get('is_quick_match', False):
+                        game['phase'] = 'game_over'
+                        other_player_num = 2 if player_num == 1 else 1
+                        if other_player_num in game['players']:
+                            game['winner_name'] = game['players'][other_player_num]['name']
+                            game['status_message'] = f"Game Over! {game['winner_name']} wins by opponent disconnect!"
+                        else:
+                            game['status_message'] = "Game Over! Player disconnected."
+                        logging.info(f"Quick match game {game_id} ended due to disconnect")
+                    
                     if all(not p.get('connected') for p in game['players'].values()):
                         games_to_remove.append(game_id)
 
@@ -328,6 +470,18 @@ def game_housekeeping():
             if game_id in GAMES:
                 del GAMES[game_id]
                 logging.info(f"Removed inactive/finished game {game_id}")
+
+        # Clean up quick match queue - remove players who have been waiting too long
+        with QUICK_MATCH_LOCK:
+            current_time = time.time()
+            players_to_remove = []
+            for i, queued_player in enumerate(QUICK_MATCH_QUEUE):
+                if current_time - queued_player['timestamp'] > QUICK_MATCH_TIMEOUT:
+                    players_to_remove.append(i)
+            
+            for i in reversed(players_to_remove):  # Remove from end to avoid index shifting
+                removed_player = QUICK_MATCH_QUEUE.pop(i)
+                logging.info(f"Removed {removed_player['name']} from quick match queue (timeout)")
 
         time.sleep(1)
 
