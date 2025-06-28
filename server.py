@@ -13,6 +13,7 @@ GAMES = {}
 GAME_LOGIC = BattleshipGame()
 TURN_TIMEOUT = 60 
 CLIENT_INACTIVITY_TIMEOUT = 5  # 10 seconds of inactivity before marking as disconnected
+RECONNECT_WINDOW_SECONDS = 60  # NEW: Duration of the pause for reconnection
 
 # Quick Match Queue - stores players waiting for quick match
 QUICK_MATCH_QUEUE = []
@@ -46,7 +47,7 @@ class BattleshipHttpServer:
         final_headers = {
             "Content-Type": "application/json",
             "Server": "BattleshipHTTP/1.0",
-            "Connection": "close",
+            "Connection": "keep-alive",
         }
         final_headers.update(headers)
         final_headers["Content-Length"] = str(len(body_bytes))
@@ -120,6 +121,16 @@ class BattleshipHttpServer:
 
             if player_number in game['players']:
                 game['players'][player_number]['last_activity'] = time.time()
+            
+            current_status_message = game['status_message'] # Start with the default message.
+
+            if game['phase'] == 'paused':
+                pause_start = game.get('pause_start_time', 0)
+                elapsed = time.time() - pause_start
+                time_remaining = max(0, RECONNECT_WINDOW_SECONDS - elapsed)
+
+                # Overwrite the status message with our dynamic countdown.
+                current_status_message = f"Game Paused. Waiting {int(time_remaining)} seconds for the other player to reconnect."
 
             opponent_number = 2 if player_number == 1 else 1
 
@@ -132,7 +143,7 @@ class BattleshipHttpServer:
                 'player_name': game['players'].get(player_number, {}).get('name'),
                 'opponent_name': game['players'].get(opponent_number, {}).get('name'),
                 'current_turn_player_name': game['players'].get(game['turn'], {}).get('name'),
-                'status_message': game['status_message'],
+                'status_message': current_status_message,
                 'game_over': game['phase'] == 'game_over',
                 'winner': game.get('winner_name'),
                 'turn_time_remaining': max(0, TURN_TIMEOUT - (time.time() - game.get('turn_start_time', 0))) if game['phase'] == 'playing' else None,
@@ -218,7 +229,6 @@ class BattleshipHttpServer:
         
         game = GAMES[game_id]
         
-        # Check if player is reconnecting
         reconnecting_player_number = None
         for p_num, p_data in game['players'].items():
             if p_data['name'] == player_name:
@@ -226,14 +236,33 @@ class BattleshipHttpServer:
                 break
 
         if reconnecting_player_number:
-            # This is a reconnect attempt for an existing player
-            if game['players'][reconnecting_player_number]['connected']:
-                return self.response(403, 'Forbidden', {'error': 'Player is already connected to this game.'})
+            # --- NEW LOGIC FOR RESUMING A PAUSED GAME ---
+            if game['phase'] == 'paused' and game.get('disconnected_player_num') == reconnecting_player_number:
+                logging.info(f"Player {player_name} reconnected to game {game_id}. Resuming.")
+                game['players'][reconnecting_player_number]['connected'] = True
+                game['players'][reconnecting_player_number]['last_activity'] = time.time()
+                
+                # Un-pause the game
+                game['phase'] = 'playing'
+                # Reset the turn timer to give the current player a full turn
+                game['turn_start_time'] = time.time()
+                game['status_message'] = f"{player_name} has reconnected. Resuming game."
+                
+                # Clean up pause-related fields
+                if 'pause_start_time' in game: del game['pause_start_time']
+                if 'disconnected_player_num' in game: del game['disconnected_player_num']
+                
+                return self.response(200, 'OK', {'game_id': game_id, 'player_number': reconnecting_player_number, 'reconnected': True})
             
-            game['players'][reconnecting_player_number]['connected'] = True
-            game['players'][reconnecting_player_number]['last_activity'] = time.time()
-            logging.info(f"Player {player_name} reconnected to game {game_id} as player {reconnecting_player_number}")
-            return self.response(200, 'OK', {'game_id': game_id, 'player_number': reconnecting_player_number, 'reconnected': True})
+            # Original reconnect logic for a player that may have been marked disconnected but game not paused
+            elif not game['players'][reconnecting_player_number]['connected']:
+                game['players'][reconnecting_player_number]['connected'] = True
+                game['players'][reconnecting_player_number]['last_activity'] = time.time()
+                logging.info(f"Player {player_name} reconnected to game {game_id} as player {reconnecting_player_number}")
+                return self.response(200, 'OK', {'game_id': game_id, 'player_number': reconnecting_player_number, 'reconnected': True})
+            
+            else: # Player is already connected and game is not paused
+                 return self.response(403, 'Forbidden', {'error': 'Player is already connected to this game.'})
         else:
             # This is a new player joining
             if len(game['players']) >= 2:
@@ -424,18 +453,11 @@ def game_housekeeping():
     while True:
         games_to_remove = []
         for game_id, game in list(GAMES.items()):
-            # Remove quick match games immediately when they're over
-            if game['phase'] == 'game_over':
-                if game.get('is_quick_match', False):
-                    games_to_remove.append(game_id)
-                    continue
-                elif time.time() - game.get('turn_start_time', 0) > 300:  # 5 minutes for regular games
-                    games_to_remove.append(game_id)
-                    continue
-
             if game['phase'] == 'playing':
+                # (This part of the function is unchanged)
                 time_since_turn_start = time.time() - game.get('turn_start_time', 0)
                 if time_since_turn_start > TURN_TIMEOUT:
+                    # ... turn timeout logic ...
                     current_player_num = game['turn']
                     current_player_name = game['players'][current_player_num]['name']
                     logging.info(f"Game {game_id}: {current_player_name}'s turn timed out.")
@@ -444,27 +466,45 @@ def game_housekeeping():
                     game['turn_start_time'] = time.time()
                     game['status_message'] = f"{current_player_name}'s turn timed out. It's now {game['players'][game['turn']]['name']}'s turn."
 
-            if len(game['players']) < 2:
-                continue
+                for player_num, player_data in game['players'].items():
+                    if player_data['connected'] and time.time() - player_data.get('last_activity', 0) > CLIENT_INACTIVITY_TIMEOUT:
+                        player_data['connected'] = False
+                        logging.info(f"Game {game_id}: Player {player_data['name']} inactive. Pausing game.")
+                        
+                        game['phase'] = 'paused'
+                        game['pause_start_time'] = time.time()
+                        game['disconnected_player_num'] = player_num
+                        game['status_message'] = f"{player_data['name']} has disconnected. Reconnection window open."
+                        
+                        break
+            
+            elif game['phase'] == 'paused':
+                # CHANGED: The check now uses the dynamic constant.
+                if time.time() - game.get('pause_start_time', 0) > RECONNECT_WINDOW_SECONDS:
+                    logging.info(f"Game {game_id}: Reconnect window closed.")
+                    game['phase'] = 'game_over'
+                    
+                    disconnected_player_num = game.get('disconnected_player_num')
+                    winner_num = 2 if disconnected_player_num == 1 else 1
+                    
+                    if winner_num in game['players']:
+                        winner_name = game['players'][winner_num]['name']
+                        game['winner_name'] = winner_name
+                        game['status_message'] = f"Game Over! {winner_name} wins by opponent disconnect!"
+                    else:
+                        game['status_message'] = "Game Over! Player disconnected."
 
-            for player_num, player_data in game['players'].items():
-                if player_data['connected'] and time.time() - player_data.get('last_activity', 0) > CLIENT_INACTIVITY_TIMEOUT:
-                    player_data['connected'] = False
-                    logging.info(f"Game {game_id}: Player {player_data['name']} marked as disconnected.")
-                    
-                    # For quick match games, end the game immediately if a player disconnects
-                    if game.get('is_quick_match', False):
-                        game['phase'] = 'game_over'
-                        other_player_num = 2 if player_num == 1 else 1
-                        if other_player_num in game['players']:
-                            game['winner_name'] = game['players'][other_player_num]['name']
-                            game['status_message'] = f"Game Over! {game['winner_name']} wins by opponent disconnect!"
-                        else:
-                            game['status_message'] = "Game Over! Player disconnected."
-                        logging.info(f"Quick match game {game_id} ended due to disconnect")
-                    
-                    if all(not p.get('connected') for p in game['players'].values()):
-                        games_to_remove.append(game_id)
+
+            # --- EXISTING LOGIC FOR GAME CLEANUP ---
+            if game['phase'] == 'game_over':
+                # Give a small grace period before removing the game so clients can get the final state
+                # The 'turn_start_time' can be repurposed as 'game_end_time' here.
+                if 'game_end_time' not in game:
+                    game['game_end_time'] = time.time()
+                
+                if time.time() - game.get('game_end_time', 0) > 10: # 10 seconds grace period
+                    games_to_remove.append(game_id)
+                    continue
 
         for game_id in games_to_remove:
             if game_id in GAMES:
@@ -496,28 +536,60 @@ class ProcessTheClient(threading.Thread):
         threading.Thread.__init__(self)
 
     def run(self):
-        request_data = b''
-        try:
-            self.connection.settimeout(1)
-            while True:
-                chunk = self.connection.recv(4096)
-                if not chunk:
-                    break
-                request_data += chunk
-                if b'\r\n\r\n' in request_data:
-                    break
-        except socket.timeout:
-            pass 
-        except Exception as e:
-            logging.error(f"Error receiving data: {e}")
+        self.connection.settimeout(10.0)  # 10-second timeout for idle connections
         
-        if request_data:
-            request_str = request_data.decode('utf-8')
-            logging.info(f"Request from {self.address}:\n--- START ---\n{request_str[:500]}\n--- END ---")
-            response_bytes = httpserver.process(request_str)
-            self.connection.sendall(response_bytes)
+        while True:
+            try:
+                # Read the request headers
+                request_data = b''
+                while b'\r\n\r\n' not in request_data:
+                    chunk = self.connection.recv(4096)
+                    if not chunk:
+                        # Client closed connection
+                        break
+                    request_data += chunk
+                
+                if not request_data:
+                    break # Break loop if client disconnected
+
+                # Extract headers and body
+                header_part, body_part = request_data.split(b'\r\n\r\n', 1)
+                headers = {}
+                header_lines = header_part.split(b'\r\n')
+                for line in header_lines[1:]:
+                    if b': ' in line:
+                        key, value = line.split(b': ', 1)
+                        headers[key.lower().decode('utf-8')] = value.decode('utf-8')
+
+                # Read the body based on Content-Length
+                content_length = int(headers.get('content-length', 0))
+                
+                while len(body_part) < content_length:
+                    body_part += self.connection.recv(4096)
+
+                request_str = request_data.decode('utf-8', errors='ignore')
+                logging.info(f"Request from {self.address}:\n--- START ---\n{request_str[:500]}\n--- END ---")
+
+                # Process the request
+                response_bytes = httpserver.process(request_str)
+                self.connection.sendall(response_bytes)
+
+                # Check if the client requested to close the connection
+                if headers.get('connection', 'keep-alive').lower() == 'close':
+                    break
+
+            except socket.timeout:
+                logging.info(f"Connection from {self.address} timed out. Closing.")
+                break
+            except (ConnectionResetError, BrokenPipeError):
+                logging.info(f"Client {self.address} forcefully closed the connection.")
+                break
+            except Exception as e:
+                logging.error(f"Error processing client {self.address}: {e}")
+                break
         
         self.connection.close()
+        logging.info(f"Connection closed for {self.address}")
 
 
 class Server(threading.Thread):

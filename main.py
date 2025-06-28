@@ -15,45 +15,103 @@ class BattleshipHttpClient:
         self.player_name = None
         self.message_callbacks = []
         self.last_successful_poll = time.time()
+        self.sock = None # ADDED: To hold the persistent socket
+
+        # NEW METHOD: Connects to the server
+    def connect(self):
+        """Establishes a socket connection to the server."""
+        if self.sock: # Close existing socket if any
+            self.disconnect()
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.connect((self.host, self.port))
+            # In a real app with logging configured, this would be useful:
+            # logging.info("Successfully connected to the server.")
+            print("Successfully connected to the server.")
+        except Exception as e:
+            # logging.error(f"Failed to connect: {e}")
+            print(f"Failed to connect: {e}")
+            self.sock = None
+            raise ConnectionError(f"Failed to connect to {self.host}:{self.port}")
+
+    # NEW METHOD: Disconnects from the server
+    def disconnect(self):
+        """Closes the socket connection."""
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+        self.sock = None
+        # logging.info("Disconnected from the server.")
+        print("Disconnected from the server.")
 
     def add_message_callback(self, callback):
         """Adds a callback function to be invoked with server responses."""
         self.message_callbacks.append(callback)
 
     def _send_request(self, method, path, payload=None):
-        """Constructs and sends an HTTP request, then parses the response."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        """Constructs and sends an HTTP request over a persistent socket."""
+        # Ensure we have a connection
+        if not self.sock:
             try:
-                sock.connect((self.host, self.port))
-                body = json.dumps(payload) if payload else ''
-                request = (
-                    f"{method} {path} HTTP/1.0\r\n"
-                    f"Host: {self.host}:{self.port}\r\n"
-                    f"Content-Type: application/json\r\n"
-                    f"Content-Length: {len(body)}\r\n"
-                    f"Connection: close\r\n\r\n"
-                    f"{body}"
-                )
-                sock.sendall(request.encode('utf-8'))
-
-                response_data = b''
-                while True:
-                    chunk = sock.recv(4096)
-                    if not chunk:
-                        break
-                    response_data += chunk
-                
-                if not response_data:
-                    self._notify_listeners({'type': 'error', 'message': 'Empty response from server'})
-                    return None
-                
-                header_part, body_part = response_data.split(b'\r\n\r\n', 1)
-                self.last_successful_poll = time.time()
-                return json.loads(body_part.decode('utf-8'))
-            except Exception as e:
-                print(f"HTTP request to {path} failed: {e}")
+                self.connect()
+            except ConnectionError as e:
+                print(f"Connection failed: {e}")
                 self._notify_listeners({'type': 'disconnect_error', 'message': f'Connection failed: {e}'})
                 return None
+
+        try:
+            body = json.dumps(payload) if payload else ''
+            request = (
+                f"{method} {path} HTTP/1.0\r\n"
+                f"Host: {self.host}:{self.port}\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                f"Connection: keep-alive\r\n\r\n" # CHANGED
+                f"{body}"
+            )
+            self.sock.sendall(request.encode('utf-8'))
+
+            # Read the response
+            response_data = b''
+            while b'\r\n\r\n' not in response_data:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    raise ConnectionError("Server closed the connection unexpectedly.")
+                response_data += chunk
+            
+            header_part, body_part = response_data.split(b'\r\n\r\n', 1)
+
+            # Parse headers to find Content-Length
+            headers = {}
+            for line in header_part.decode('utf-8').split('\r\n')[1:]:
+                if ': ' in line:
+                    key, value = line.split(': ', 1)
+                    headers[key.lower()] = value
+
+            content_length = int(headers.get('content-length', 0))
+            
+            # Read the rest of the body until Content-Length is satisfied
+            while len(body_part) < content_length:
+                chunk = self.sock.recv(content_length - len(body_part))
+                if not chunk:
+                    raise ConnectionError("Incomplete response from server.")
+                body_part += chunk
+                
+            self.last_successful_poll = time.time()
+            return json.loads(body_part.decode('utf-8'))
+
+        except (ConnectionError, ConnectionResetError, BrokenPipeError, socket.timeout) as e:
+            print(f"HTTP request to {path} failed due to connection issue: {e}")
+            self._notify_listeners({'type': 'disconnect_error', 'message': f'Connection lost: {e}'})
+            self.disconnect() # Mark connection as dead
+            return None
+        except Exception as e:
+            print(f"An unexpected error occurred during request to {path}: {e}")
+            self._notify_listeners({'type': 'error', 'message': f'Request failed: {e}'})
+            self.disconnect() # Unsure about connection state, so reset it
+            return None
 
     def host_game(self, player_name):
         self.player_name = player_name
