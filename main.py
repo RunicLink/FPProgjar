@@ -1,6 +1,7 @@
 import pygame
 import sys
 import json
+import time
 from client_network import BattleshipClient
 
 # Initialize Pygame
@@ -13,11 +14,11 @@ BOARD_SIZE = 10
 CELL_SIZE = 40
 BOARD_MARGIN = 50
 SHIP_COLORS = {
-    'C': (255, 0, 0),    # Carrier - Red
-    'B': (0, 255, 0),    # Battleship - Green
-    'R': (0, 0, 255),    # Cruiser - Blue
-    'S': (255, 255, 0),  # Submarine - Yellow
-    'D': (255, 0, 255)   # Destroyer - Magenta
+    'C': (142, 68, 173), # Carrier - Purple
+    'B': (46, 134, 193), # Battleship - Blue
+    'R': (241, 196, 15), # Cruiser - Yellow
+    'S': (39, 174, 96),  # Submarine - Green
+    'D': (231, 76, 60)   # Destroyer - Red
 }
 
 # Colors
@@ -28,7 +29,6 @@ RED = (200, 0, 0)
 GREEN = (0, 200, 0)
 GRAY = (128, 128, 128)
 LIGHT_GRAY = (200, 200, 200)
-DARK_GRAY = (64, 64, 64)
 
 class BattleshipGUI:
     def __init__(self):
@@ -38,18 +38,22 @@ class BattleshipGUI:
         self.font = pygame.font.Font(None, 24)
         self.big_font = pygame.font.Font(None, 36)
         
-        # Game state
         self.client = BattleshipClient()
         self.client.add_message_callback(self.handle_server_message)
         
-        self.game_phase = "connecting"  # connecting, waiting, placing_ships, playing, game_over
+        self.game_phase = "connecting"
         self.own_board = [['.' for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
         self.opponent_board = [['.' for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
         self.your_turn = False
         self.player_number = None
         self.status_message = "Connecting to server..."
         
-        # Ship placement
+        # --- MODIFIED: Added state for scoreboard and timer ---
+        self.own_sunk_ships = []
+        self.opponent_sunk_ships = []
+        self.turn_start_time = 0
+        self.turn_duration = 0
+        
         self.ships_to_place = [
             {"name": "Carrier", "length": 5, "placed": False},
             {"name": "Battleship", "length": 4, "placed": False},
@@ -58,19 +62,30 @@ class BattleshipGUI:
             {"name": "Destroyer", "length": 2, "placed": False}
         ]
         self.current_ship_index = 0
-        self.ship_orientation = 'H'  # H for horizontal, V for vertical
+        self.ship_orientation = 'H'
         self.placed_ships = []
         
-        # Board positions
-        self.own_board_rect = pygame.Rect(BOARD_MARGIN, BOARD_MARGIN + 100, 
-                                         BOARD_SIZE * CELL_SIZE, BOARD_SIZE * CELL_SIZE)
-        self.opponent_board_rect = pygame.Rect(WINDOW_WIDTH - BOARD_MARGIN - BOARD_SIZE * CELL_SIZE, 
-                                              BOARD_MARGIN + 100,
-                                              BOARD_SIZE * CELL_SIZE, BOARD_SIZE * CELL_SIZE)
+        self.own_board_rect = pygame.Rect(BOARD_MARGIN, BOARD_MARGIN + 100, BOARD_SIZE * CELL_SIZE, BOARD_SIZE * CELL_SIZE)
+        self.opponent_board_rect = pygame.Rect(WINDOW_WIDTH - BOARD_MARGIN - BOARD_SIZE * CELL_SIZE, BOARD_MARGIN + 100, BOARD_SIZE * CELL_SIZE, BOARD_SIZE * CELL_SIZE)
 
     def handle_server_message(self, message):
         msg_type = message.get('type')
         
+        # --- ADDED: Handle sunk ship and timer info ---
+        sunk_info = message.get('sunk_ship_info')
+        if sunk_info:
+            if sunk_info['player'] == self.player_number:
+                if sunk_info['ship_name'] not in self.own_sunk_ships: self.own_sunk_ships.append(sunk_info['ship_name'])
+            else:
+                if sunk_info['ship_name'] not in self.opponent_sunk_ships: self.opponent_sunk_ships.append(sunk_info['ship_name'])
+
+        if 'turn_start_time' in message:
+            self.turn_start_time = message['turn_start_time']
+            self.turn_duration = message['turn_duration']
+
+        if msg_type in ['game_start', 'attack_result', 'opponent_attack', 'turn_timeout']:
+            self.your_turn = message.get('your_turn', False)
+
         if msg_type == 'waiting':
             self.game_phase = "waiting"
             self.status_message = message['message']
@@ -79,99 +94,56 @@ class BattleshipGUI:
             self.player_number = message['player_number']
             self.status_message = f"You are Player {self.player_number}. Place your ships!"
         elif msg_type == 'ships_placed':
-            if message['success']:
-                self.status_message = "Ships placed! Waiting for opponent..."
-            else:
-                self.status_message = message['message']
+            self.status_message = "Ships placed! Waiting for opponent..." if message['success'] else message['message']
         elif msg_type == 'game_start':
             self.game_phase = "playing"
-            self.your_turn = message['your_turn']
+            self.status_message = message['message']
+        elif msg_type == 'attack_result':
+            self.status_message = f"Attack result: {message['result']}"
+            if message.get('game_over'): self.game_phase = "game_over"
+        elif msg_type == 'opponent_attack':
+            self.status_message = f"Opponent attacked: {message['result']}"
+            if message.get('game_over'): self.game_phase = "game_over"
+        elif msg_type == 'turn_timeout':
+            self.status_message = message['message']
+        elif msg_type == 'game_over':
+            self.game_phase = "game_over"
+            winner_text = message['winner']
+            if (winner_text == "Player 1" and self.player_number == 1) or \
+               (winner_text == "Player 2" and self.player_number == 2):
+                self.status_message = "Game Over: You won!"
+            else:
+                self.status_message = f"Game Over: {winner_text} won!"
+        elif msg_type == 'opponent_disconnected':
+            self.game_phase = "game_over"
             self.status_message = message['message']
         elif msg_type == 'game_state':
             self.own_board = message['own_board']
             self.opponent_board = message['opponent_board']
-            self.your_turn = message['your_turn']
-        elif msg_type == 'attack_result':
-            if message['success']:
-                self.status_message = f"Attack result: {message['result']}"
-                self.your_turn = message.get('your_turn', False)
-                if message.get('game_over'):
-                    self.game_phase = "game_over"
-                    self.status_message = "You won!"
-            else:
-                self.status_message = message['message']
-        elif msg_type == 'opponent_attack':
-            self.status_message = f"Opponent attacked: {message['result']}"
-            self.your_turn = message.get('your_turn', False)
-            if message.get('game_over'):
-                self.game_phase = "game_over"
-                self.status_message = "You lost!"
-        elif msg_type == 'game_over':
-            self.game_phase = "game_over"
-            winner = message['winner']
-            if (winner == "Player 1" and self.player_number == 1) or \
-               (winner == "Player 2" and self.player_number == 2):
-                self.status_message = "You won!"
-            else:
-                self.status_message = "You lost!"
-        elif msg_type == 'opponent_disconnected':
-            self.status_message = message['message']
 
     def connect_to_server(self):
         if self.client.connect():
             self.client.join_game()
-            self.game_phase = "waiting"
-            self.status_message = "Connected! Waiting for game..."
         else:
-            self.status_message = "Failed to connect to server"
+            self.status_message = "Failed to connect. Please restart the application."
 
     def draw_board(self, board, board_rect, title, clickable=False):
-        # Draw title
         title_surface = self.big_font.render(title, True, BLACK)
-        title_rect = title_surface.get_rect()
-        title_rect.centerx = board_rect.centerx
-        title_rect.bottom = board_rect.top - 10
-        self.screen.blit(title_surface, title_rect)
+        self.screen.blit(title_surface, (board_rect.centerx - title_surface.get_width() / 2, board_rect.top - 40))
         
-        # Draw grid
         for row in range(BOARD_SIZE):
             for col in range(BOARD_SIZE):
-                cell_rect = pygame.Rect(
-                    board_rect.x + col * CELL_SIZE,
-                    board_rect.y + row * CELL_SIZE,
-                    CELL_SIZE,
-                    CELL_SIZE
-                )
-                
-                # Determine cell color
+                cell_rect = pygame.Rect(board_rect.x + col * CELL_SIZE, board_rect.y + row * CELL_SIZE, CELL_SIZE, CELL_SIZE)
                 cell_value = board[row][col]
-                if cell_value == '.':
-                    color = WHITE
-                elif cell_value == 'X':
-                    color = RED
-                elif cell_value == 'O':
-                    color = BLUE
-                else:
-                    # Ship cell
-                    color = SHIP_COLORS.get(cell_value, GRAY)
+                
+                # --- MODIFIED: Color for misses is now GRAY ---
+                if cell_value == '.': color = WHITE
+                elif cell_value == 'X': color = RED
+                elif cell_value == 'O': color = GRAY # Changed from BLUE
+                else: color = SHIP_COLORS.get(cell_value, LIGHT_GRAY)
                 
                 pygame.draw.rect(self.screen, color, cell_rect)
                 pygame.draw.rect(self.screen, BLACK, cell_rect, 1)
-                
-                # Draw coordinates
-                if row == 0:
-                    coord_text = self.font.render(str(col), True, BLACK)
-                    coord_rect = coord_text.get_rect()
-                    coord_rect.centerx = cell_rect.centerx
-                    coord_rect.bottom = cell_rect.top - 5
-                    self.screen.blit(coord_text, coord_rect)
-                
-                if col == 0:
-                    coord_text = self.font.render(str(row), True, BLACK)
-                    coord_rect = coord_text.get_rect()
-                    coord_rect.centery = cell_rect.centery
-                    coord_rect.right = cell_rect.left - 5
-                    self.screen.blit(coord_text, coord_rect)
 
     def draw_ship_placement_preview(self, mouse_pos):
         if self.current_ship_index >= len(self.ships_to_place):
@@ -308,68 +280,62 @@ class BattleshipGUI:
             self.screen.blit(ship_surface, (WINDOW_WIDTH // 2 - 100, y_offset + i * 30))
 
     def draw_status(self):
-        # Status message
         status_surface = self.big_font.render(self.status_message, True, BLACK)
-        status_rect = status_surface.get_rect()
-        status_rect.centerx = WINDOW_WIDTH // 2
-        status_rect.y = 10
-        self.screen.blit(status_surface, status_rect)
+        self.screen.blit(status_surface, (WINDOW_WIDTH / 2 - status_surface.get_width() / 2, 10))
         
-        # Turn indicator
         if self.game_phase == "playing":
+            # --- MODIFIED: Display turn and timer ---
             turn_text = "Your Turn" if self.your_turn else "Opponent's Turn"
             turn_color = GREEN if self.your_turn else RED
-            turn_surface = self.font.render(turn_text, True, turn_color)
-            turn_rect = turn_surface.get_rect()
-            turn_rect.centerx = WINDOW_WIDTH // 2
-            turn_rect.y = 50
-            self.screen.blit(turn_surface, turn_rect)
+            
+            time_left = self.turn_duration - (time.time() - self.turn_start_time)
+            if time_left < 0: time_left = 0
+            
+            full_text = f"{turn_text} ({int(time_left)}s)"
+            turn_surface = self.font.render(full_text, True, turn_color)
+            self.screen.blit(turn_surface, (WINDOW_WIDTH / 2 - turn_surface.get_width() / 2, 50))
+    
+    # --- ADDED: New method to draw the scoreboard ---
+    def draw_scoreboard(self):
+        scoreboard_y = self.own_board_rect.bottom + 20
+        
+        def render_sunk_list(title, ships, x_pos, y_pos, color):
+            title_surf = self.font.render(title, True, BLACK)
+            self.screen.blit(title_surf, (x_pos, y_pos))
+            for i, ship_name in enumerate(ships):
+                ship_surf = self.font.render(ship_name, True, color)
+                # Draw a strikethrough
+                pygame.draw.line(self.screen, color, (x_pos, y_pos + (i + 1) * 25 + 10), (x_pos + ship_surf.get_width(), y_pos + (i + 1) * 25 + 10), 2)
+                self.screen.blit(ship_surf, (x_pos, y_pos + (i + 1) * 25))
+
+        render_sunk_list("Your Sunk Ships", self.own_sunk_ships, self.own_board_rect.left, scoreboard_y, RED)
+        render_sunk_list("Opponent Sunk Ships", self.opponent_sunk_ships, self.opponent_board_rect.left, scoreboard_y, GREEN)
 
     def run(self):
         self.connect_to_server()
-        
         running = True
         while running:
             for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
+                if event.type == pygame.QUIT: running = False
                 elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_r and self.game_phase == "placing_ships":
-                        # Rotate ship orientation
-                        self.ship_orientation = 'V' if self.ship_orientation == 'H' else 'H'
+                    if event.key == pygame.K_r and self.game_phase == "placing_ships": self.ship_orientation = 'V' if self.ship_orientation == 'H' else 'H'
                 elif event.type == pygame.MOUSEBUTTONDOWN:
-                    if event.button == 1:  # Left click
-                        if self.game_phase == "placing_ships":
-                            self.place_ship(event.pos)
-                        elif self.game_phase == "playing":
-                            self.attack_opponent(event.pos)
+                    if event.button == 1:
+                        if self.game_phase == "placing_ships": self.place_ship(event.pos)
+                        elif self.game_phase == "playing": self.attack_opponent(event.pos)
             
-            # Clear screen
-            self.screen.fill(WHITE)
+            self.screen.fill(LIGHT_GRAY)
+            self.draw_status()
             
-            # Draw UI based on game phase
-            if self.game_phase in ["waiting", "connecting"]:
-                self.draw_status()
-            elif self.game_phase == "placing_ships":
-                self.draw_status()
+            if self.game_phase == "placing_ships":
                 self.draw_board(self.own_board, self.own_board_rect, "Your Board")
                 self.draw_ship_list()
                 self.draw_ship_placement_preview(pygame.mouse.get_pos())
-                
-                # Instructions
-                instruction_text = "Click to place ship, R to rotate"
-                instruction_surface = self.font.render(instruction_text, True, BLACK)
-                self.screen.blit(instruction_surface, (10, WINDOW_HEIGHT - 30))
             elif self.game_phase in ["playing", "game_over"]:
-                self.draw_status()
                 self.draw_board(self.own_board, self.own_board_rect, "Your Board")
                 self.draw_board(self.opponent_board, self.opponent_board_rect, "Opponent's Board", True)
-                
-                # Instructions
-                if self.game_phase == "playing":
-                    instruction_text = "Click on opponent's board to attack"
-                    instruction_surface = self.font.render(instruction_text, True, BLACK)
-                    self.screen.blit(instruction_surface, (10, WINDOW_HEIGHT - 30))
+                # --- ADDED: Call to draw scoreboard ---
+                self.draw_scoreboard()
             
             pygame.display.flip()
             self.clock.tick(60)
