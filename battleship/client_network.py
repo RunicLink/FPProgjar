@@ -15,13 +15,13 @@ class BattleshipClient:
             'your_turn': False,
             'game_started': False,
             'player_number': None,
-            'player_name': '', # Added player name
-            'opponent_name': '', # Added opponent name
-            'room_code': None, # Added room code
-            'is_spectator': False, # Added spectator flag
-            'spectate_board_p1': None, # Board for spectator
-            'spectate_board_p2': None, # Board for spectator
-            'current_turn_player_name': None # Player name whose turn it is
+            'player_name': '',
+            'opponent_name': '',
+            'room_code': None,
+            'is_spectator': False,
+            'spectate_board_p1': None,
+            'spectate_board_p2': None,
+            'current_turn_player_name': None
         }
         self.message_callbacks = []
 
@@ -30,7 +30,6 @@ class BattleshipClient:
             self.socket.connect((self.host, self.port))
             self.connected = True
             
-            # Start listening for messages
             listen_thread = threading.Thread(target=self.listen_for_messages)
             listen_thread.daemon = True
             listen_thread.start()
@@ -43,12 +42,10 @@ class BattleshipClient:
     def listen_for_messages(self):
         while self.connected:
             try:
-                # Increased buffer size to handle larger game state messages
                 data = self.socket.recv(4096).decode('utf-8') 
                 if not data:
                     break
-                
-                # Handling multiple JSON objects in one go
+
                 for message_str in data.split('}{'):
                     if not message_str.startswith('{'):
                         message_str = '{' + message_str
@@ -75,7 +72,6 @@ class BattleshipClient:
             self.game_state['room_code'] = message.get('room_code')
             self.game_state['player_name'] = message.get('player_name', '')
         elif msg_type == 'game_state':
-            # This handles both player and spectator game states
             if not self.game_state['is_spectator']:
                 self.game_state['own_board'] = message['own_board']
                 self.game_state['opponent_board'] = message['opponent_board']
@@ -84,7 +80,7 @@ class BattleshipClient:
                 self.game_state['player_name'] = message.get('player_name', self.game_state['player_name'])
                 self.game_state['opponent_name'] = message.get('opponent_name', self.game_state['opponent_name'])
                 self.game_state['current_turn_player_name'] = message.get('current_turn_player_name')
-            else: # Spectator mode
+            else:
                 self.game_state['spectate_board_p1'] = message['player1_board']
                 self.game_state['spectate_board_p2'] = message['player2_board']
                 self.game_state['game_started'] = message['game_started']
@@ -120,8 +116,23 @@ class BattleshipClient:
             self.game_state['player1_name'] = message.get('player1_name', 'Player 1')
             self.game_state['player2_name'] = message.get('player2_name', 'Player 2')
             self.game_state['current_turn_player_name'] = message.get('current_turn_player_name')
+        elif msg_type == 'reconnect_success':
+            self.game_state['player_number'] = message['player_number']
+            self.game_state['room_code'] = message.get('room_code')
+            self.game_state['player_name'] = message.get('player_name', '')
+            self.game_state['opponent_name'] = message.get('opponent_name', '')
+            phase = message.get('phase')
+            if phase == 'placing_ships':
+                self.game_state['game_started'] = False
+            elif phase == 'waiting_for_opponent':
+                self.game_state['game_started'] = False
+            elif phase == 'playing':
+                self.game_state['game_started'] = True
+        elif msg_type == 'opponent_disconnected_temp':
+            pass
+        elif msg_type == 'opponent_reconnected':
+            pass
 
-        # Call registered callbacks
         for callback in self.message_callbacks:
             callback(message)
 
@@ -176,7 +187,6 @@ class BattleshipClient:
             self.socket.close()
 
 if __name__ == '__main__':
-    # Simple test client
     client = BattleshipClient()
     
     def message_handler(message):
@@ -186,10 +196,6 @@ if __name__ == '__main__':
     
     if client.connect():
         print("Connected to server")
-        # Example usage (will be replaced by GUI)
-        # client.quick_play()
-        
-        # Keep the client running
         try:
             while client.connected:
                 pass

@@ -6,10 +6,8 @@ import time
 import random
 from battleship.client_network import BattleshipClient
 
-# Initialize Pygame
 pygame.init()
 
-# Constants
 WINDOW_WIDTH = 1200
 WINDOW_HEIGHT = 800
 BOARD_SIZE = 10
@@ -53,7 +51,7 @@ class InputBox:
                 if event.key == pygame.K_RETURN:
                     self.active = False
                     self.color = BLACK
-                    return True # Indicate enter was pressed
+                    return True
                 elif event.key == pygame.K_BACKSPACE:
                     self.text = self.text[:-1]
                 else:
@@ -110,9 +108,8 @@ class BattleshipGUI:
         self.client = BattleshipClient()
         self.client.add_message_callback(self.handle_server_message)
         
-        self.game_phase = "main_menu" # Initial phase
+        self.game_phase = "main_menu"
         
-        # Game State
         self.own_board = [['.' for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
         self.opponent_board = [['.' for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
         self.your_turn = False
@@ -127,9 +124,8 @@ class BattleshipGUI:
         self.turn_start_time = 0
         self.turn_duration = 0
         self.room_code = ""
-        self.game_list = [] # For spectator mode
+        self.game_list = []
 
-        # Spectator Boards
         self.spectate_board_p1 = [['.' for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
         self.spectate_board_p2 = [['.' for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
         self.is_spectator = False
@@ -137,7 +133,6 @@ class BattleshipGUI:
         self.player2_name_spectate = "Player 2"
 
 
-        # Ship Placement
         self.ships_to_place = [
             {"name": "Carrier", "length": 5, "placed": False},
             {"name": "Battleship", "length": 4, "placed": False},
@@ -152,17 +147,15 @@ class BattleshipGUI:
         self.own_board_rect = pygame.Rect(BOARD_MARGIN, BOARD_MARGIN + 100, BOARD_SIZE * CELL_SIZE, BOARD_SIZE * CELL_SIZE)
         self.opponent_board_rect = pygame.Rect(WINDOW_WIDTH - BOARD_MARGIN - BOARD_SIZE * CELL_SIZE, BOARD_MARGIN + 100, BOARD_SIZE * CELL_SIZE, BOARD_SIZE * CELL_SIZE)
 
-        # UI Elements
         self.main_menu_buttons = []
         self.host_game_inputs = {}
         self.join_game_inputs = {}
         self.spectate_game_buttons = []
 
         self.setup_ui_elements()
-        self.connect_to_server() # Connect on startup
+        self.connect_to_server()
 
     def setup_ui_elements(self):
-        # Main Menu
         btn_width, btn_height = 200, 60
         spacing = 20
         start_y = WINDOW_HEIGHT // 2 - (btn_height * 2 + spacing * 1.5)
@@ -174,19 +167,15 @@ class BattleshipGUI:
             Button(WINDOW_WIDTH // 2 - btn_width // 2, start_y + (btn_height + spacing) * 3, btn_width, btn_height, "Spectate Game", BLUE, LIGHT_GRAY, self.go_to_spectate_game)
         ]
 
-        # Host Game Screen
         self.host_game_inputs['name_input'] = InputBox(WINDOW_WIDTH // 2 - 150, WINDOW_HEIGHT // 2 - 50, 300, 40, '')
         self.host_game_inputs['host_button'] = Button(WINDOW_WIDTH // 2 - 100, WINDOW_HEIGHT // 2 + 50, 200, 50, "Host Game", GREEN, LIGHT_GRAY, self.host_private_game)
         self.host_game_inputs['back_button'] = Button(50, 50, 100, 40, "Back", GRAY, LIGHT_GRAY, self.go_to_main_menu)
 
-
-        # Join Game Screen
         self.join_game_inputs['name_input'] = InputBox(WINDOW_WIDTH // 2 - 150, WINDOW_HEIGHT // 2 - 100, 300, 40, '')
         self.join_game_inputs['code_input'] = InputBox(WINDOW_WIDTH // 2 - 150, WINDOW_HEIGHT // 2 - 40, 300, 40, 'Room Code')
         self.join_game_inputs['join_button'] = Button(WINDOW_WIDTH // 2 - 100, WINDOW_HEIGHT // 2 + 50, 200, 50, "Join Game", GREEN, LIGHT_GRAY, self.join_private_game)
         self.join_game_inputs['back_button'] = Button(50, 50, 100, 40, "Back", GRAY, LIGHT_GRAY, self.go_to_main_menu)
 
-        # Spectate Game Screen
         self.spectate_game_buttons.append(Button(50, 50, 100, 40, "Back", GRAY, LIGHT_GRAY, self.go_to_main_menu))
         self.spectate_game_buttons.append(Button(WINDOW_WIDTH - 150, 50, 100, 40, "Refresh", BLUE, LIGHT_GRAY, self.refresh_game_list))
 
@@ -196,12 +185,10 @@ class BattleshipGUI:
         sunk_info = message.get('sunk_ship_info')
         if sunk_info:
             if self.is_spectator:
-                # Spectators don't have 'own' or 'opponent' player numbers directly
-                # The server sends which player's ship was sunk (1 or 2)
-                pass # Sunk ship info for spectators will be handled by game_state directly for board updates
-            elif sunk_info['player'] == self.client.game_state['player_number']: # This client's ship was sunk
+                pass
+            elif sunk_info['player'] == self.client.game_state['player_number']:
                 if sunk_info['ship_name'] not in self.own_sunk_ships: self.own_sunk_ships.append(sunk_info['ship_name'])
-            else: # Opponent's ship was sunk
+            else:
                 if sunk_info['ship_name'] not in self.opponent_sunk_ships: self.opponent_sunk_ships.append(sunk_info['ship_name'])
 
         if 'turn_start_time' in message:
@@ -216,15 +203,13 @@ class BattleshipGUI:
             self.game_phase = "waiting_room"
             self.status_message = message['message']
             self.room_code = message.get('room_code', '')
-        elif msg_type == 'room_code': # Specifically for host to get the code
+        elif msg_type == 'room_code':
             self.room_code = message['code']
         elif msg_type == 'room_join_status':
             if message['success']:
-                # The 'game_found' message will follow this for actual game setup
                 pass
             else:
                 self.status_message = message['message']
-                # Stay on join game screen if failed
                 self.game_phase = "join_game"
         elif msg_type == 'game_found':
             self.game_phase = "placing_ships"
@@ -242,7 +227,7 @@ class BattleshipGUI:
             self.player_name = self.client.game_state['player_name']
             self.opponent_name = self.client.game_state['opponent_name']
             self.current_turn_player_name = message.get('current_turn_player_name')
-            self.is_spectator = False # Ensure spectator flag is false if a player
+            self.is_spectator = False
 
         elif msg_type == 'attack_result':
             self.status_message = f"Attack result: {message['result']}"
@@ -274,16 +259,15 @@ class BattleshipGUI:
             winner_text = message['winner']
             if self.is_spectator:
                 self.status_message = f"Game Over: {winner_text} won!"
-            elif (winner_text == self.player_name): # If the winner is this player's name
+            elif (winner_text == self.player_name):
                 self.status_message = "Game Over: You won!"
-            else: # Opponent won, or game ended for other reasons
-                self.status_message = f"Game Over: {winner_text} won!"
+            else:
+                self.status_message = f"Game Over: You lost!"
 
         elif msg_type == 'opponent_disconnected':
             self.game_phase = "game_over"
             self.status_message = message['message']
         elif msg_type == 'game_state':
-            # Handle game state for both players and spectators
             if self.is_spectator:
                 self.spectate_board_p1 = message['player1_board']
                 self.spectate_board_p2 = message['player2_board']
@@ -304,7 +288,6 @@ class BattleshipGUI:
         elif msg_type == 'game_list':
             self.game_list = message['games']
             self.status_message = f"Available public games: {len(self.game_list)}"
-            # Now draw the game list in spectate_game phase
         elif msg_type == 'spectate_start':
             self.is_spectator = True
             self.game_phase = "spectating"
@@ -312,7 +295,32 @@ class BattleshipGUI:
             self.player1_name_spectate = message.get('player1_name', 'Player 1')
             self.player2_name_spectate = message.get('player2_name', 'Player 2')
             self.current_turn_player_name = message.get('current_turn_player_name')
+        elif msg_type == 'reconnect_success':
+            phase = message.get('phase')
+            self.player_number = message['player_number']
+            self.player_name = message.get('player_name', '')
+            self.opponent_name = message.get('opponent_name', '')
+            self.room_code = message.get('room_code', '')
             
+            if phase == 'hosting':
+                self.game_phase = "waiting_room"
+                self.status_message = f"Reconnected! Hosting game with room code: {self.room_code}. Waiting for opponent..."
+            elif phase == 'placing_ships':
+                self.game_phase = "placing_ships"
+                self.status_message = f"Reconnected! You are Player {self.player_number} ({self.player_name}). Place your ships!"
+                self.reset_ship_placement()
+            elif phase == 'waiting_for_opponent':
+                self.game_phase = "waiting_room"
+                self.status_message = "Reconnected! Waiting for opponent to place ships..."
+            elif phase == 'playing':
+                self.game_phase = "playing"
+                self.status_message = f"Reconnected to game! Playing against {self.opponent_name}"
+                self.is_spectator = False
+        elif msg_type == 'opponent_disconnected_temp':
+            self.status_message = message['message']
+        elif msg_type == 'opponent_reconnected':
+            self.status_message = message['message']
+                
     def reset_game_state(self):
         self.own_board = [['.' for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
         self.opponent_board = [['.' for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
@@ -344,7 +352,6 @@ class BattleshipGUI:
         self.current_ship_index = 0
         self.ship_orientation = 'H'
         self.placed_ships = []
-        # Clear own board in case of re-entry
         self.own_board = [['.' for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
 
 
@@ -354,9 +361,8 @@ class BattleshipGUI:
             self.status_message = "Connected to server."
         else:
             self.status_message = "Failed to connect. Please restart the application."
-            self.game_phase = "error" # A new error phase to indicate connection failure
+            self.game_phase = "error"
 
-    # Navigation methods
     def go_to_main_menu(self):
         self.reset_game_state()
         self.game_phase = "main_menu"
@@ -366,7 +372,7 @@ class BattleshipGUI:
         self.reset_game_state()
         self.game_phase = "host_game"
         self.status_message = "Enter your name to host a private game."
-        self.host_game_inputs['name_input'].text = '' # FIX: Changed from random name
+        self.host_game_inputs['name_input'].text = ''
         self.host_game_inputs['name_input'].txt_surface = self.host_game_inputs['name_input'].font.render(self.host_game_inputs['name_input'].text, True, self.host_game_inputs['name_input'].color)
 
 
@@ -374,7 +380,7 @@ class BattleshipGUI:
         self.reset_game_state()
         self.game_phase = "join_game"
         self.status_message = "Enter your name and room code to join a private game."
-        self.join_game_inputs['name_input'].text = '' # FIX: Changed from random name
+        self.join_game_inputs['name_input'].text = ''
         self.join_game_inputs['name_input'].txt_surface = self.join_game_inputs['name_input'].font.render(self.join_game_inputs['name_input'].text, True, self.join_game_inputs['name_input'].color)
         self.join_game_inputs['code_input'].text = ''
         self.join_game_inputs['code_input'].txt_surface = self.join_game_inputs['code_input'].font.render(self.join_game_inputs['code_input'].text, True, self.join_game_inputs['code_input'].color)
@@ -420,7 +426,7 @@ class BattleshipGUI:
         self.reset_game_state()
         self.client.spectate_game(game_id)
         self.status_message = "Joining as spectator..."
-        self.is_spectator = True # Set spectator flag immediately
+        self.is_spectator = True
 
     def draw_board(self, board, board_rect, title, clickable=False):
         title_surface = self.big_font.render(title, True, BLACK)
@@ -434,7 +440,7 @@ class BattleshipGUI:
                 if cell_value == '.': color = WHITE
                 elif cell_value == 'X': color = RED
                 elif cell_value == 'O': color = GRAY
-                else: color = SHIP_COLORS.get(cell_value, LIGHT_GRAY) # For ship cells
+                else: color = SHIP_COLORS.get(cell_value, LIGHT_GRAY)
                 
                 pygame.draw.rect(self.screen, color, cell_rect)
                 pygame.draw.rect(self.screen, BLACK, cell_rect, 1)
@@ -467,7 +473,6 @@ class BattleshipGUI:
                         can_place = False
                     else:
                         for c in range(col, col + ship['length']):
-                            # Check if the target cell is part of another ship
                             if self.own_board[row][c] != '.':
                                 can_place = False
                             cells_to_highlight.append((row, c))
@@ -476,7 +481,6 @@ class BattleshipGUI:
                         can_place = False
                     else:
                         for r in range(row, row + ship['length']):
-                            # Check if the target cell is part of another ship
                             if self.own_board[r][col] != '.':
                                 can_place = False
                             cells_to_highlight.append((r, col))
@@ -557,7 +561,6 @@ class BattleshipGUI:
             row = rel_y // CELL_SIZE
             
             if 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE:
-                # Only allow attacking if the cell hasn't been attacked yet
                 if self.opponent_board[row][col] == '.':
                     self.client.attack(row, col)
                 else:
@@ -582,7 +585,7 @@ class BattleshipGUI:
             if not self.is_spectator:
                 turn_text = f"Your Turn ({self.player_name})" if self.your_turn else f"Opponent's Turn ({self.opponent_name})"
                 turn_color = GREEN if self.your_turn else RED
-            else: # Spectator mode
+            else:
                 turn_text = f"Current Turn: {self.current_turn_player_name}"
                 turn_color = BLUE
 
@@ -604,12 +607,10 @@ class BattleshipGUI:
                 pygame.draw.line(self.screen, color, (x_pos, y_pos + (i + 1) * 25 + 10), (x_pos + ship_surf.get_width(), y_pos + (i + 1) * 25 + 10), 2)
                 self.screen.blit(ship_surf, (x_pos, y_pos + (i + 1) * 25))
 
-        # Only display relevant scoreboard for players/spectators
         if not self.is_spectator:
             render_sunk_list("Your Sunk Ships", self.own_sunk_ships, self.own_board_rect.left, scoreboard_y, RED)
             render_sunk_list("Opponent Sunk Ships", self.opponent_sunk_ships, self.opponent_board_rect.left, scoreboard_y, GREEN)
-        else: # For spectators, perhaps list all sunk ships, or no specific "sunk" list
-            # You could add a combined list here if desired, or just rely on board markers
+        else:
             pass
 
 
@@ -618,8 +619,7 @@ class BattleshipGUI:
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT: running = False
-                
-                # Event handling based on game phase
+
                 if self.game_phase == "main_menu":
                     for button in self.main_menu_buttons:
                         button.handle_event(event)
@@ -636,7 +636,6 @@ class BattleshipGUI:
                     for button in self.spectate_game_buttons:
                         button.handle_event(event)
                     if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                        # Handle clicks on game list items
                         mouse_x, mouse_y = event.pos
                         list_start_y = WINDOW_HEIGHT // 2 - (len(self.game_list) * 30 // 2)
                         for i, game_info in enumerate(self.game_list):
@@ -680,7 +679,7 @@ class BattleshipGUI:
                     self.screen.blit(code_text, (WINDOW_WIDTH // 2 - code_text.get_width() // 2, WINDOW_HEIGHT // 2 - 50))
                 wait_text = self.big_font.render("Waiting for opponent...", True, BLACK)
                 self.screen.blit(wait_text, (WINDOW_WIDTH // 2 - wait_text.get_width() // 2, WINDOW_HEIGHT // 2 + 10))
-                self.host_game_inputs['back_button'].draw(self.screen) # Use host game back button for simplicity
+                self.host_game_inputs['back_button'].draw(self.screen)
             elif self.game_phase == "spectate_game":
                 for button in self.spectate_game_buttons:
                     button.draw(self.screen)
@@ -709,16 +708,20 @@ class BattleshipGUI:
                 self.draw_board(self.opponent_board, self.opponent_board_rect, f"{self.opponent_name}'s Board", True)
                 self.draw_scoreboard()
             elif self.game_phase == "spectating":
-                # Draw both player boards for spectators
                 p1_board_rect = pygame.Rect(BOARD_MARGIN, BOARD_MARGIN + 100, BOARD_SIZE * CELL_SIZE, BOARD_SIZE * CELL_SIZE)
                 p2_board_rect = pygame.Rect(WINDOW_WIDTH - BOARD_MARGIN - BOARD_SIZE * CELL_SIZE, BOARD_MARGIN + 100, BOARD_SIZE * CELL_SIZE, BOARD_SIZE * CELL_SIZE)
 
                 self.draw_board(self.spectate_board_p1, p1_board_rect, f"{self.player1_name_spectate}'s Board")
                 self.draw_board(self.spectate_board_p2, p2_board_rect, f"{self.player2_name_spectate}'s Board")
                 
-                # Back to Main Menu button for spectators
                 spectate_back_button = Button(50, 50, 100, 40, "Main Menu", GRAY, LIGHT_GRAY, self.go_to_main_menu)
+                self.spectate_back_button = Button(50, 50, 100, 40, "Main Menu", GRAY, LIGHT_GRAY, self.go_to_main_menu)
                 spectate_back_button.draw(self.screen)
+                if event.type == pygame.MOUSEMOTION:
+                    self.spectate_back_button.handle_event(event)
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    self.spectate_back_button.handle_event(event)
+                
 
             elif self.game_phase == "game_over":
                 game_over_text = self.big_font.render(self.status_message, True, BLACK)

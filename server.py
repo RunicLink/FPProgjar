@@ -4,15 +4,16 @@ import threading
 import json
 import uuid
 import time
-import random # For room code generation
+import random
 from battleship.game_logic import BattleshipGame
 
 class GameManager:
     def __init__(self):
-        self.games = {}  # game_id -> game_info
-        self.clients = {} # client_id -> client_info
-        self.waiting_private_hosts = {} # room_code -> client_id (host)
-        self.waiting_quick_play = [] # list of client_ids
+        self.games = {}
+        self.clients = {}
+        self.waiting_private_hosts = {}
+        self.waiting_quick_play = []
+        self.disconnected_players = {}
         self.lock = threading.Lock()
 
     def generate_room_code(self):
@@ -32,6 +33,10 @@ class GameManager:
 
     def join_private_game(self, client_id, player_name, room_code):
         with self.lock:
+            reconnect_key = (room_code, player_name)
+            if reconnect_key in self.disconnected_players:
+                return self.reconnect_to_game(client_id, player_name, room_code)
+            
             if room_code in self.waiting_private_hosts:
                 player1_id = self.waiting_private_hosts.pop(room_code)
                 
@@ -49,7 +54,8 @@ class GameManager:
                     'player2_ready': False,
                     'game_started': False,
                     'game_type': 'private',
-                    'spectators': []
+                    'spectators': [],
+                    'room_code': room_code
                 }
                 
                 self.clients[player1_id]['game_id'] = game_id
@@ -60,7 +66,6 @@ class GameManager:
                 self.clients[client_id]['room_code'] = room_code
                 self.clients[client_id]['game_type'] = 'private'
                 
-                # Notify both players that game is found
                 self.send_message(player1_id, {'type': 'game_found', 'player_number': 1, 'room_code': room_code, 'player_name': self.games[game_id]['player1_name'], 'opponent_name': player_name, 'message': 'Game found! Place your ships.'})
                 self.send_message(client_id, {'type': 'game_found', 'player_number': 2, 'room_code': room_code, 'player_name': player_name, 'opponent_name': self.games[game_id]['player1_name'], 'message': 'Game found! Place your ships.'})
                 return True, "Game joined successfully!"
@@ -141,15 +146,13 @@ class GameManager:
                 self.clients[client_id]['socket'].send(json.dumps(message).encode('utf-8'))
             except Exception as e:
                 print(f"Error sending to {client_id}: {e}")
-                self.disconnect_client(client_id) # Consider disconnecting if send fails
+                self.disconnect_client(client_id)
 
     def send_game_state_to_players(self, game_id):
         game_info = self.games[game_id]
         game = game_info['game']
 
-        # Player 1's state
         self._send_single_player_game_state(game_info['player1'], game_info['player1'], game_info['player2'], game)
-        # Player 2's state
         self._send_single_player_game_state(game_info['player2'], game_info['player2'], game_info['player1'], game)
         
         self.send_spectator_game_state(game_id)
@@ -200,14 +203,14 @@ class GameManager:
         for row in game.player1_board:
             safe_row = []
             for cell in row:
-                safe_row.append(cell if cell in ['X', 'O'] else '.') # Spectators only see hits/misses on the actual board
+                safe_row.append(cell if cell in ['X', 'O'] else '.')
             player1_board_safe.append(safe_row)
 
         player2_board_safe = []
         for row in game.player2_board:
             safe_row = []
             for cell in row:
-                safe_row.append(cell if cell in ['X', 'O'] else '.') # Spectators only see hits/misses on the actual board
+                safe_row.append(cell if cell in ['X', 'O'] else '.')
             player2_board_safe.append(safe_row)
         
         current_turn_player_name = game_info['player1_name'] if game_info['current_turn'] == game_info['player1'] else game_info['player2_name']
@@ -226,11 +229,22 @@ class GameManager:
     def disconnect_client(self, client_id):
         with self.lock:
             if client_id in self.clients:
-                # Remove from waiting lists
                 if client_id in self.waiting_quick_play:
                     self.waiting_quick_play.remove(client_id)
+
+                disconnected_room_code = None
                 for code, host_id in list(self.waiting_private_hosts.items()):
                     if host_id == client_id:
+                        disconnected_room_code = code
+                        player_name = self.clients[client_id].get('player_name', 'Host')
+                        reconnect_key = (code, player_name)
+                        self.disconnected_players[reconnect_key] = {
+                            'game_id': None, 
+                            'player_number': 1,
+                            'old_client_id': client_id,
+                            'disconnect_time': time.time(),
+                            'is_host_waiting': True
+                        }
                         del self.waiting_private_hosts[code]
                         break
 
@@ -238,26 +252,48 @@ class GameManager:
                 if game_id and game_id in self.games:
                     game_info = self.games[game_id]
                     
-                    # Remove from spectators if applicable
+
                     if client_id in game_info['spectators']:
                         game_info['spectators'].remove(client_id)
-                    
-                    # Handle player disconnection
+
                     elif client_id == game_info['player1'] or client_id == game_info['player2']:
-                        opponent_id = None
-                        if client_id == game_info['player1']:
-                            opponent_id = game_info['player2']
-                        elif client_id == game_info['player2']:
-                            opponent_id = game_info['player1']
+                        if game_info['game_type'] == 'private':
+                            player_number = 1 if client_id == game_info['player1'] else 2
+                            player_name = game_info['player1_name'] if player_number == 1 else game_info['player2_name']
+                            room_code = game_info.get('room_code')
+                            
+                            if room_code:
 
-                        if opponent_id and opponent_id in self.clients:
-                            self.send_message(opponent_id, {'type': 'opponent_disconnected', 'message': 'Your opponent has disconnected. Game over.'})
-                        
-                        # Notify spectators
-                        for spec_id in game_info['spectators']:
-                            self.send_message(spec_id, {'type': 'game_over', 'winner': 'N/A', 'message': 'Game ended due to player disconnection.'})
+                                reconnect_key = (room_code, player_name)
+                                self.disconnected_players[reconnect_key] = {
+                                    'game_id': game_id,
+                                    'player_number': player_number,
+                                    'old_client_id': client_id,
+                                    'disconnect_time': time.time()
+                                }
+                                
+                                opponent_id = game_info['player2'] if player_number == 1 else game_info['player1']
+                                if opponent_id and opponent_id in self.clients:
+                                    self.send_message(opponent_id, {
+                                        'type': 'opponent_disconnected_temp',
+                                        'message': f'{player_name} has disconnected. They can reconnect using the same name and room code.'
+                                    })
+                        else:
 
-                        del self.games[game_id]
+                            opponent_id = None
+                            if client_id == game_info['player1']:
+                                opponent_id = game_info['player2']
+                            elif client_id == game_info['player2']:
+                                opponent_id = game_info['player1']
+
+                            if opponent_id and opponent_id in self.clients:
+                                self.send_message(opponent_id, {'type': 'opponent_disconnected', 'message': 'Your opponent has disconnected. Game over.'})
+                            
+                            # Notify spectators
+                            for spec_id in game_info['spectators']:
+                                self.send_message(spec_id, {'type': 'game_over', 'winner': 'N/A', 'message': 'Game ended due to player disconnection.'})
+
+                            del self.games[game_id]
                 
                 client_socket = self.clients[client_id]['socket']
                 client_socket.close()
@@ -265,13 +301,148 @@ class GameManager:
                 print(f"Client {client_id} disconnected")
 
 
+    def reconnect_to_game(self, client_id, player_name, room_code):
+        """Handle reconnection to an existing private game"""
+        reconnect_key = (room_code, player_name)
+        
+        if reconnect_key not in self.disconnected_players:
+            return False, "No game found for reconnection."
+        
+        game_info = self.disconnected_players[reconnect_key]
+        
+        if game_info.get('is_host_waiting', False):
+            self.waiting_private_hosts[room_code] = client_id
+            self.clients[client_id]['player_name'] = player_name
+            self.clients[client_id]['room_code'] = room_code
+            self.clients[client_id]['game_type'] = 'private'
+            
+            del self.disconnected_players[reconnect_key]
+            
+            self.send_message(client_id, {
+                'type': 'reconnect_success',
+                'phase': 'hosting',
+                'player_number': 1,
+                'room_code': room_code,
+                'player_name': player_name,
+                'message': 'Reconnected! Waiting for another player to join...'
+            })
+            self.send_message(client_id, {'type': 'waiting', 'message': 'Waiting for another player...', 'room_code': room_code})
+            self.send_message(client_id, {'type': 'room_code', 'code': room_code})
+            
+            return True, "Reconnected as host successfully!"
+
+        game_id = game_info['game_id']
+        player_number = game_info['player_number']
+        
+        if game_id not in self.games:
+            del self.disconnected_players[reconnect_key]
+            return False, "Game no longer exists."
+
+        self.clients[client_id]['game_id'] = game_id
+        self.clients[client_id]['player_number'] = player_number
+        self.clients[client_id]['player_name'] = player_name
+        self.clients[client_id]['room_code'] = room_code
+        self.clients[client_id]['game_type'] = 'private'
+
+        if player_number == 1:
+            self.games[game_id]['player1'] = client_id
+            if self.games[game_id]['current_turn'] == game_info['old_client_id']:
+                self.games[game_id]['current_turn'] = client_id
+        else:
+            self.games[game_id]['player2'] = client_id
+            if self.games[game_id]['current_turn'] == game_info['old_client_id']:
+                self.games[game_id]['current_turn'] = client_id
+        
+        del self.disconnected_players[reconnect_key]
+
+        current_game_info = self.games[game_id]
+        opponent_name = current_game_info['player2_name'] if player_number == 1 else current_game_info['player1_name']
+        
+        if not current_game_info['game_started']:
+            if (player_number == 1 and current_game_info['player1_ready']) or \
+               (player_number == 2 and current_game_info['player2_ready']):
+                self.send_message(client_id, {
+                    'type': 'reconnect_success',
+                    'phase': 'waiting_for_opponent',
+                    'player_number': player_number,
+                    'room_code': room_code,
+                    'player_name': player_name,
+                    'opponent_name': opponent_name,
+                    'message': 'Reconnected! Waiting for opponent to place ships.'
+                })
+            else:
+                self.send_message(client_id, {
+                    'type': 'reconnect_success',
+                    'phase': 'placing_ships',
+                    'player_number': player_number,
+                    'room_code': room_code,
+                    'player_name': player_name,
+                    'opponent_name': opponent_name,
+                    'message': 'Reconnected! Place your ships.'
+                })
+        else:
+
+            self.send_message(client_id, {
+                'type': 'reconnect_success',
+                'phase': 'playing',
+                'player_number': player_number,
+                'room_code': room_code,
+                'player_name': player_name,
+                'opponent_name': opponent_name,
+                'message': 'Reconnected to game!'
+            })
+            self.send_game_state_to_players(game_id)
+
+        opponent_id = current_game_info['player2'] if player_number == 1 else current_game_info['player1']
+        if opponent_id in self.clients:
+            self.send_message(opponent_id, {
+                'type': 'opponent_reconnected',
+                'message': f"{player_name} has reconnected to the game."
+            })
+        
+        return True, "Reconnected successfully!"
+
+    def cleanup_old_disconnections(self):
+        """Clean up disconnected players after a timeout (e.g., 5 minutes)"""
+        RECONNECT_TIMEOUT = 300 
+        current_time = time.time()
+        
+        with self.lock:
+            expired_keys = []
+            for key, info in self.disconnected_players.items():
+                if current_time - info['disconnect_time'] > RECONNECT_TIMEOUT:
+                    expired_keys.append(key)
+                    game_id = info['game_id']
+
+                    if game_id in self.games:
+                        game_info = self.games[game_id]
+
+                        remaining_player_id = game_info['player1'] if info['player_number'] == 2 else game_info['player2']
+                        if remaining_player_id in self.clients:
+                            self.send_message(remaining_player_id, {
+                                'type': 'opponent_disconnected',
+                                'message': 'Your opponent failed to reconnect. Game over.'
+                            })
+
+                        for spec_id in game_info['spectators']:
+                            self.send_message(spec_id, {
+                                'type': 'game_over',
+                                'winner': 'N/A',
+                                'message': 'Game ended due to player timeout.'
+                            })
+                        
+                        del self.games[game_id]
+
+            for key in expired_keys:
+                del self.disconnected_players[key]
+
 class BattleshipServer:
     def __init__(self, host='localhost', port=8888):
         self.host = host
         self.port = port
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.game_manager = GameManager() # Use GameManager for all game logic
+        self.game_manager = GameManager()
 
     def start(self):
         self.socket.bind((self.host, self.port))
@@ -281,6 +452,10 @@ class BattleshipServer:
         timeout_thread = threading.Thread(target=self.check_turn_timeouts)
         timeout_thread.daemon = True
         timeout_thread.start()
+
+        cleanup_thread = threading.Thread(target=self.cleanup_disconnections_periodically)
+        cleanup_thread.daemon = True
+        cleanup_thread.start()
         
         while True:
             client_socket, address = self.socket.accept()
@@ -322,8 +497,7 @@ class BattleshipServer:
 
                         self.game_manager.send_message(timed_out_player_id, {'type': 'turn_timeout', 'message': 'Your turn timed out!', 'your_turn': False, **turn_info})
                         self.game_manager.send_message(next_player_id, {'type': 'turn_timeout', 'message': "Opponent's turn timed out. Your turn!", 'your_turn': True, **turn_info})
-                        
-                        # Update spectators on turn change
+
                         self.game_manager.send_spectator_game_state(game_id)
             time.sleep(1)
 
@@ -334,7 +508,6 @@ class BattleshipServer:
                 if not data:
                     break
                 
-                # Handle multiple JSON objects in one go
                 for message_str in data.split('}{'):
                     if not message_str.startswith('{'):
                         message_str = '{' + message_str
@@ -359,16 +532,15 @@ class BattleshipServer:
             player_name = message.get('player_name', 'Host')
             room_code = self.game_manager.host_game(client_id, player_name)
             self.game_manager.send_message(client_id, {'type': 'waiting', 'message': 'Waiting for another player...', 'room_code': room_code})
-            self.game_manager.send_message(client_id, {'type': 'room_code', 'code': room_code}) # Send room code explicitly
+            self.game_manager.send_message(client_id, {'type': 'room_code', 'code': room_code})
         elif msg_type == 'join_private_game':
             player_name = message.get('player_name', 'Player')
             room_code = message.get('room_code')
             success, msg = self.game_manager.join_private_game(client_id, player_name, room_code)
-            self.game_manager.send_message(client_id, {'type': 'room_join_status', 'success': success, 'message': msg})
+            if not success:
+                self.game_manager.send_message(client_id, {'type': 'room_join_status', 'success': success, 'message': msg})
         elif msg_type == 'quick_play':
             success, msg = self.game_manager.quick_play(client_id)
-            # FIX: Only send 'waiting' message if the player is actually waiting.
-            # The game_manager.quick_play method sends 'game_found' itself when a match is made.
             if "Waiting" in msg:
                 self.game_manager.send_message(client_id, {'type': 'waiting', 'message': msg})
         elif msg_type == 'place_ships':
@@ -402,10 +574,9 @@ class BattleshipServer:
             else:
                 player_board, player_ships = game.player2_board, game.player2_ships
             
-            # Clear existing ships on the board before placing new ones
             for r in range(game.board_size):
                 for c in range(game.board_size):
-                    if player_board[r][c] not in ['.', 'X', 'O']: # Only clear ship markers, not hits/misses
+                    if player_board[r][c] not in ['.', 'X', 'O']:
                         player_board[r][c] = '.'
             player_ships.clear()
             
@@ -422,7 +593,7 @@ class BattleshipServer:
                     game_info['player2_ready'] = True
                 
                 self.game_manager.send_message(client_id, {'type': 'ships_placed', 'success': True, 'message': 'Ships placed successfully!'})
-                self.game_manager.send_game_state_to_players(game_id) # Update boards after placing ships
+                self.game_manager.send_game_state_to_players(game_id)
                 
                 if game_info['player1_ready'] and game_info['player2_ready']:
                     game_info['game_started'] = True
@@ -435,7 +606,7 @@ class BattleshipServer:
                     self.game_manager.send_message(game_info['player1'], {'type': 'game_start', 'your_turn': True, 'player_name': p1_name, 'opponent_name': p2_name, 'current_turn_player_name': p1_name, 'message': 'Game started! Your turn to attack.', **turn_info})
                     self.game_manager.send_message(game_info['player2'], {'type': 'game_start', 'your_turn': False, 'player_name': p2_name, 'opponent_name': p1_name, 'current_turn_player_name': p1_name, 'message': 'Game started! Wait for your turn.', **turn_info})
                     
-                    self.game_manager.send_spectator_game_state(game_id) # Notify spectators that game has started
+                    self.game_manager.send_spectator_game_state(game_id)
             else:
                 self.game_manager.send_message(client_id, {'type': 'ships_placed', 'success': False, 'message': 'Failed to place ships. Try again.'})
 
@@ -459,12 +630,10 @@ class BattleshipServer:
             sunk_ship_info = None
             if "sunk" in result:
                 sunk_ship_name = result.split("sunk ")[1].replace("!", "")
-                # Determine which player's ship was sunk for client display
                 sunk_player_number = 2 if player_number == 1 else 1 
                 sunk_ship_info = {'player': sunk_player_number, 'ship_name': sunk_ship_name}
 
             if result in ["Hit", "Miss"] or "sunk" in result:
-                # Always switch turns after a valid attack
                 if game_info['current_turn'] == game_info['player1']:
                     game_info['current_turn'] = game_info['player2']
                 else:
@@ -476,20 +645,17 @@ class BattleshipServer:
 
                 current_turn_player_name = game_info['player1_name'] if game_info['current_turn'] == game_info['player1'] else game_info['player2_name']
 
-                # Notify attacker
                 self.game_manager.send_message(client_id, {'type': 'attack_result', 'success': True, 'result': result, 'your_turn': False, 'game_over': game_over, 'sunk_ship_info': sunk_ship_info, 'row': row, 'col': col, 'current_turn_player_name': current_turn_player_name, **turn_info})
-                
-                # Notify opponent
+
                 opponent_id = game_info['player2'] if player_number == 1 else game_info['player1']
                 self.game_manager.send_message(opponent_id, {'type': 'opponent_attack', 'result': result, 'your_turn': not game_over, 'game_over': game_over, 'sunk_ship_info': sunk_ship_info, 'row': row, 'col': col, 'current_turn_player_name': current_turn_player_name, **turn_info})
                 
-                # Send updated game state to both players and spectators
                 self.game_manager.send_game_state_to_players(game_id)
                 self.game_manager.send_spectator_game_state(game_id)
 
 
                 if game_over:
-                    winner_id = client_id # The player who made the last successful attack
+                    winner_id = client_id
                     winner_name = game_info['player1_name'] if winner_id == game_info['player1'] else game_info['player2_name']
                     self.game_manager.send_message(game_info['player1'], {'type': 'game_over', 'winner': winner_name})
                     self.game_manager.send_message(game_info['player2'], {'type': 'game_over', 'winner': winner_name})
@@ -500,18 +666,22 @@ class BattleshipServer:
 
     def check_game_over(self, game_info):
         game = game_info['game']
-        # Game is over if all of Player 2's ships are sunk (Player 1 wins)
-        # OR all of Player 1's ships are sunk (Player 2 wins)
-        
-        p1_won = game.check_game_over(game.player2_board, game.player2_ships) # Check if player 2's board (opponent of P1) is all hit
+
+        p1_won = game.check_game_over(game.player2_board, game.player2_ships)
         if p1_won:
             return True
         
-        p2_won = game.check_game_over(game.player1_board, game.player1_ships) # Check if player 1's board (opponent of P2) is all hit
+        p2_won = game.check_game_over(game.player1_board, game.player1_ships)
         if p2_won:
             return True
             
         return False
+
+    def cleanup_disconnections_periodically(self):
+        """Periodically clean up expired disconnections"""
+        while True:
+            self.game_manager.cleanup_old_disconnections()
+            time.sleep(60)
 
 if __name__ == '__main__':
     server = BattleshipServer('0.0.0.0', 8888)
