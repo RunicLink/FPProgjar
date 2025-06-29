@@ -1,3 +1,4 @@
+import random
 import socket
 import threading
 import json
@@ -216,10 +217,16 @@ class BattleshipHttpServer:
             return self.handle_attack(payload, GAMES[game_id])
 
         return self.response(404, 'Not Found', {'error': 'API endpoint not found'})
+    
+    def generate_numeric_room_code(self, length=6):
+        while True:
+            code = ''.join(random.choices('0123456789', k=length))
+            if code not in GAMES:
+                return code
 
     def handle_host(self, payload):
         player_name = payload.get('player_name', 'Player 1')
-        game_id = str(uuid.uuid4())[:8]
+        game_id = self.generate_numeric_room_code()
         GAMES[game_id] = {
             'game_id': game_id,
             'players': {1: {'name': player_name, 'ships_placed': False, 'connected': True, 'last_activity': time.time(), 'placed_ships_data': []}},
@@ -369,7 +376,7 @@ class BattleshipHttpServer:
                 player1 = QUICK_MATCH_QUEUE.pop(0)
                 player2 = {'name': player_name, 'timestamp': time.time()}
                 
-                game_id = str(uuid.uuid4())[:8]
+                game_id = self.generate_numeric_room_code()
                 GAMES[game_id] = {
                     'game_id': game_id,
                     'players': {
