@@ -218,7 +218,7 @@ class BattleshipHttpServer:
 
         return self.response(404, 'Not Found', {'error': 'API endpoint not found'})
     
-    def generate_numeric_room_code(self, length=6):
+    def generate_numeric_room_code(self, length=4):
         while True:
             code = ''.join(random.choices('0123456789', k=length))
             if code not in GAMES:
