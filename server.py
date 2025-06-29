@@ -20,10 +20,6 @@ QUICK_MATCH_TIMEOUT = 120
 QUICK_MATCH_LOCK = threading.Lock()  
 
 class BattleshipHttpServer:
-    """
-    An HTTP server that handles the game logic for Battleship.
-    It manages game creation, player turns, and game state via API endpoints.
-    """
 
     def __init__(self):
         self.sessions = {}
@@ -35,7 +31,6 @@ class BattleshipHttpServer:
         }
 
     def response(self, code=200, message='OK', body=None, headers={}):
-        """Builds a complete HTTP response."""
         body_bytes = b''
         if body:
             if not isinstance(body, bytes):
@@ -59,7 +54,6 @@ class BattleshipHttpServer:
         return f"{header_block}\r\n\r\n".encode('utf-8') + body_bytes
 
     def get_headers_and_body(self, data):
-        """Parses raw request data into headers and body."""
         try:
             parts = data.split('\r\n\r\n', 1)
             header_part = parts[0]
@@ -76,7 +70,6 @@ class BattleshipHttpServer:
             return {}, ''
 
     def process(self, data_str):
-        """Processes an incoming raw HTTP request string."""
         try:
             request_line = data_str.split('\r\n')[0]
             parts = request_line.split(' ')
@@ -96,7 +89,6 @@ class BattleshipHttpServer:
             return self.response(500, 'Internal Server Error', {'error': 'Failed to process request'})
 
     def http_get(self, path, headers):
-        """Handles GET requests, primarily for polling game state."""
         if path.startswith('/api/gamestate'):
             params = {}
             if '?' in path:
@@ -182,7 +174,6 @@ class BattleshipHttpServer:
         return self.response(404, 'Not Found', {'error': 'Endpoint not found'})
     
     def get_opponent_view(self, real_board):
-        """Creates a view of the opponent's board, hiding un-hit ships."""
         view_board = [['.' for _ in range(10)] for _ in range(10)]
         for r in range(10):
             for c in range(10):
@@ -191,7 +182,6 @@ class BattleshipHttpServer:
         return view_board
 
     def http_post(self, path, headers, body):
-        """Handles POST requests for game actions."""
         try:
             payload = json.loads(body) if body else {}
         except json.JSONDecodeError:
@@ -353,7 +343,6 @@ class BattleshipHttpServer:
         return self.response(200, 'OK', {'result': result})
 
     def handle_quick_match(self, payload):
-        """Handle quick match request - join queue and try to match with other players"""
         player_name = payload.get('player_name')
         if not player_name:
             return self.response(400, 'Bad Request', {'error': 'Player name is required'})
@@ -416,7 +405,6 @@ class BattleshipHttpServer:
                 return self.response(200, 'OK', {'matched': False, 'waiting': True})
 
     def handle_cancel_quick_match(self, payload):
-        """Handle cancel quick match request"""
         player_name = payload.get('player_name')
         if not player_name:
             return self.response(400, 'Bad Request', {'error': 'Player name is required'})
@@ -431,7 +419,6 @@ class BattleshipHttpServer:
         return self.response(404, 'Not Found', {'error': 'Not in quick match queue'})
 
     def handle_check_quick_match(self, payload):
-        """Check if a quick match has been found for the player"""
         player_name = payload.get('player_name')
         if not player_name:
             return self.response(400, 'Bad Request', {'error': 'Player name is required'})
@@ -484,9 +471,6 @@ class BattleshipHttpServer:
 
 
 def game_housekeeping():
-    """
-    A background thread to manage game state, like turn timeouts and disconnections.
-    """
     while True:
         games_to_remove = []
         for game_id, game in list(GAMES.items()):

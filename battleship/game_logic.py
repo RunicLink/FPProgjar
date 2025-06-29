@@ -11,7 +11,6 @@ class BattleshipGame:
             "Submarine": 3,
             "PatrolBoat": 2
         }
-        # These are now templates, not used directly for game instances in the server
         self.player1_board = [['.' for _ in range(self.board_size)] for _ in range(self.board_size)]
         self.player2_board = [['.' for _ in range(self.board_size)] for _ in range(self.board_size)]
         self.player1_ships = {}
@@ -48,16 +47,14 @@ class BattleshipGame:
                 if orientation == 'H':
                     start_row = random.randint(0, self.board_size - 1)
                     start_col = random.randint(0, self.board_size - ship_length)
-                else: # 'V'
+                else:
                     start_row = random.randint(0, self.board_size - ship_length)
                     start_col = random.randint(0, self.board_size - 1)
                 
-                # Create a temporary copy to test placement
                 temp_board = [row[:] for row in player_board]
-                temp_ships = {} # We don't need to deep copy ships for this check
+                temp_ships = {}
 
                 if self.place_ship(temp_board, temp_ships, ship_name, ship_length, start_row, start_col, orientation):
-                     # If successful, apply to the real board
                     self.place_ship(player_board, player_ships, ship_name, ship_length, start_row, start_col, orientation)
                     placed = True
 
@@ -86,23 +83,18 @@ class BattleshipGame:
                 else:
                     return "Hit"
             else:
-                 # This case should ideally not be reached if boards are set up correctly
                 return "Hit" 
         else:
             opponent_board[row][col] = 'O'
             return "Miss"
 
     def check_game_over(self, opponent_ships):
-        """
-        Checks if all ships for a given player have been sunk.
-        Returns True if the game is over, False otherwise.
-        """
         if not opponent_ships:
-            return False # No ships to sink
+            return False
             
         for ship_name, data in opponent_ships.items():
             if len(data['hits']) < len(data['positions']):
-                return False # At least one ship is not fully sunk
+                return False
         return True
 
     def print_board(self, board):
@@ -113,7 +105,6 @@ class BattleshipGame:
 if __name__ == '__main__':
     game = BattleshipGame()
     
-    # Create fresh boards and ship dictionaries for a test game
     p1_board = [['.' for _ in range(game.board_size)] for _ in range(game.board_size)]
     p1_ships = {}
     p2_board = [['.' for _ in range(game.board_size)] for _ in range(game.board_size)]
